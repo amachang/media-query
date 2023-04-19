@@ -1,0 +1,2 @@
+class MediaScrapyError(Exception):
+    pass
