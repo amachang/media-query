@@ -15,7 +15,7 @@ class SiteConfig:
     start_url = "http://example.com/"
     save_dir = "/data/example_com_data"
     login = {
-        "url": "http://example.com/login"
+        "url": "http://example.com/login",
         "formdata": {
             "user": "amachang",
             "password": "password",
