@@ -44,6 +44,6 @@ class SiteConfig:
 Start the crawler like below.
 
 ```
-python -m media_query -c site_config.py
+python -m media_scrapy -c site_config.py
 ```
 
