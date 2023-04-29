@@ -4,20 +4,20 @@ from pathlib import Path
 from scrapy.settings import Settings
 from media_scrapy import settings as setting_definitions
 from media_scrapy.spiders import MainSpider
+from media_scrapy.conf import UrlInfo
 
 
 def fake_response(
     url: str = "http://example.com/",
     body: bytes = b"<body>foo</body>",
-    structure_path: List[int] = [],
-    file_path: List[str] = [],
+    url_info: Optional[UrlInfo] = None,
     request: Optional[Request] = None,
 ) -> Response:
     if request is None:
         request = Request(url=url)
-        request.meta["structure_path"] = structure_path
-        request.meta["file_path"] = file_path
     assert request is not None
+    if url_info is not None:
+        request.meta["url_info"] = url_info
     response = HtmlResponse(url=url, request=request, body=body)
     for key, value in request.meta.items():
         response.meta[key] = value

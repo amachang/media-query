@@ -8,8 +8,11 @@ from twisted.python.failure import Failure
 from tap import Tap
 from scrapy.utils.log import configure_logging
 from typing import Any
+import traceback
+from typeguard import typechecked
 
 
+@typechecked
 class Args(Tap):
     site_config: Path
 
@@ -17,6 +20,7 @@ class Args(Tap):
         self.add_argument("-c", "--site_config")
 
 
+@typechecked
 def main(args: Args) -> None:
     configure_logging()
     settings = Settings()
@@ -46,6 +50,10 @@ def main(args: Args) -> None:
         reactor.run()
 
     if failure is not None:
+        if isinstance(failure.value, BaseException):
+            traceback.print_exception(
+                type(failure.value), failure.value, tb=failure.getTracebackObject()
+            )
         failure.raiseException()
 
 

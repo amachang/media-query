@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Any, Union, Optional, Type, Iterable
+from typing import Dict, List, Any, Union, Optional, Type, Iterator
 from pathlib import Path
 import re
 from importlib.machinery import SourceFileLoader
@@ -12,32 +12,29 @@ from media_scrapy.errors import MediaScrapyError
 from media_scrapy.conf import (
     SiteConfigDefinition,
     SiteConfig,
-    FileSiteUrlInfo,
-    DirSiteUrlInfo,
-    NoDirSiteUrlInfo,
+    DownloadUrlInfo,
+    FileContentUrlInfo,
+    ParseUrlInfo,
 )
 from media_scrapy.items import MediaFiles
+from typeguard import typechecked
 
 
+@typechecked
 class MainSpider(scrapy.Spider):
     name = "main"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        if "siteconf" not in kwargs:
-            raise MediaScrapyError(f"Site config path not given")
+    def __init__(self, siteconf: Union[str, Path, Type[SiteConfigDefinition]]) -> None:
+        super().__init__(siteconf=siteconf)
 
-        site_conf_path_str: Union[str, Path, Type[SiteConfigDefinition]] = kwargs[
-            "siteconf"
-        ]
-        if inspect.isclass(site_conf_path_str):
-            site_conf_cls = site_conf_path_str
+        if inspect.isclass(siteconf):
+            site_conf_cls = siteconf
         else:
-            if isinstance(site_conf_path_str, str):
-                site_conf_path = Path(site_conf_path_str)
+            if isinstance(siteconf, str):
+                site_conf_path = Path(siteconf)
             else:
-                assert isinstance(site_conf_path_str, Path)
-                site_conf_path = site_conf_path_str
+                assert isinstance(siteconf, Path)
+                site_conf_path = siteconf
 
             site_conf_matches = re.search(f"(.*)\\.py$", site_conf_path.name)
             if site_conf_matches is None:
@@ -87,7 +84,7 @@ class MainSpider(scrapy.Spider):
         site_conf = site_conf_cls()
         self.config = SiteConfig(site_conf)
 
-    def start_requests(self) -> Request:
+    def start_requests(self) -> Iterator[Request]:
         if self.config.needs_login:
             callback = self.login
         else:
@@ -99,7 +96,7 @@ class MainSpider(scrapy.Spider):
             meta={"structure_path": [], "file_path": []},
         )
 
-    def login(self, res: Response) -> Request:
+    def login(self, res: Response) -> Iterator[Request]:
         assert self.config.needs_login
         yield FormRequest(
             self.config.login.url,
@@ -107,7 +104,7 @@ class MainSpider(scrapy.Spider):
             callback=self.parse_login,
         )
 
-    def parse_login(self, res: Response) -> Request:
+    def parse_login(self, res: Response) -> Iterator[Request]:
         yield Request(
             self.config.start_url,
             callback=self.parse,
@@ -115,49 +112,34 @@ class MainSpider(scrapy.Spider):
             meta={"structure_path": [], "file_path": []},
         )
 
-    def parse(self, res: Response) -> Iterable[Union[Request, MediaFiles]]:
+    def parse(self, res: Response) -> Iterator[Union[Request, MediaFiles]]:
         url_infos = self.config.get_url_infos(res)
 
-        file_urls = []
-        file_paths = []
+        file_urls: List[str] = []
+        file_contents: List[Optional[bytes]] = []
+        file_paths: List[str] = []
+        download_url_seen = set()
         for url_info in url_infos:
             url = url_info.url
-            if isinstance(url_info, FileSiteUrlInfo):
+            if isinstance(url_info, FileContentUrlInfo):
                 file_urls.append(url)
-                file_path_components_list = url_info.file_path
-                file_path = path.join(*file_path_components_list)
-                file_paths.append(path.join(self.config.save_dir, file_path))
-            elif isinstance(url_info, DirSiteUrlInfo):
-                yield Request(
-                    url,
-                    callback=self.parse_dir,
-                    meta={
-                        "structure_path": url_info.structure_path,
-                        "parent_file_path": url_info.parent_file_path,
-                    },
-                )
+                file_contents.append(url_info.file_content)
+                file_paths.append(path.join(self.config.save_dir, url_info.file_path))
+            elif isinstance(url_info, DownloadUrlInfo):
+                if url in download_url_seen:
+                    continue
+                download_url_seen.add(url)
+                file_urls.append(url)
+                file_contents.append(None)
+                file_paths.append(path.join(self.config.save_dir, url_info.file_path))
+            elif isinstance(url_info, ParseUrlInfo):
+                yield Request(url, callback=self.parse, meta={"url_info": url_info})
             else:
-                assert isinstance(url_info, NoDirSiteUrlInfo)
-                yield Request(
-                    url,
-                    callback=self.parse,
-                    meta={
-                        "structure_path": url_info.structure_path,
-                        "file_path": url_info.file_path,
-                    },
-                )
+                assert False
 
-        yield MediaFiles(file_urls=file_urls, file_paths=file_paths)
+        file_paths = [path.abspath(file_path) for file_path in file_paths]
 
-    def parse_dir(
-        self, res: Response
-    ) -> Iterable[Optional[Union[Request, MediaFiles]]]:
-        parent_file_path = res.meta["parent_file_path"]
-        dirname = self.config.get_dirname(res)
-        if dirname is not None:
-            file_path = parent_file_path + [dirname]
-            res.meta["file_path"] = file_path
-            assert res.meta["file_path"] == file_path
-            return self.parse(res)
-        else:
-            return []
+        if 0 < len(file_urls):
+            yield MediaFiles(
+                file_urls=file_urls, file_contents=file_contents, file_paths=file_paths
+            )

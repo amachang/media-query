@@ -1,158 +1,273 @@
 import inspect
 from dataclasses import dataclass
-from typing import Protocol, Optional, Callable, List, Any, Union
+import json
+from typing import (
+    cast,
+    runtime_checkable,
+    Protocol,
+    Optional,
+    Callable,
+    List,
+    Any,
+    Union,
+    Dict,
+    Set,
+    TypeVar,
+    Tuple,
+)
 import re
+import html
 import os
+from os import path
 import functools
 from urllib.parse import urldefrag
 from collections import namedtuple
-from schema import Schema, Or, SchemaError, Optional as SchemaOptional
 from media_scrapy.errors import MediaScrapyError
 from scrapy.http import Response
+from parsel import Selector, SelectorList, xpathfuncs
+from schema import Schema, Or, SchemaError, Optional as SchemaOptional
+from typeguard import typechecked
+import personal_xpath_functions
 
 
+@typechecked
+@runtime_checkable
 class SiteConfigDefinition(Protocol):
     start_url: str
     save_dir: str
     structure: list
 
 
+@typechecked
 class SiteConfig:
-    root_structure_node: "RootStructureNode"
+    root_structure_node: "StructureNode"
 
     def __init__(self, conf_def: SiteConfigDefinition):
-        missing_attributes = list(
-            filter(
-                lambda attr: not hasattr(conf_def, attr),
-                ["start_url", "save_dir", "structure"],
-            )
-        )
-        if 0 < len(missing_attributes):
-            raise MediaScrapyError(
-                f"Site config doesn't have required attributes: {missing_attributes}"
-            )
-
-        self.save_dir = conf_def.save_dir
+        self.save_dir = Schema(str).validate(conf_def.save_dir)
         os.makedirs(self.save_dir, exist_ok=True)
 
-        self.start_url = conf_def.start_url
+        self.start_url = Schema(str).validate(conf_def.start_url)
 
         if hasattr(conf_def, "login"):
-            validate(conf_def.login, Schema({"url": str, "formdata": dict}))
+            login_def = Schema({"url": str, "formdata": dict}).validate(conf_def.login)
             self.needs_login = True
-            self.login = LoginConfig(conf_def.login["url"], conf_def.login["formdata"])
+            self.login = LoginConfig(login_def["url"], login_def["formdata"])
         else:
             self.needs_login = False
 
-        self.root_structure_node = parse_structure(conf_def.structure)
+        self.root_structure_node = parse_structure_list(conf_def.structure)
 
-        if hasattr(conf_def, "ignore_url"):
-            validate(conf_def.ignore_url, UrlMatcherSchema())
-            self.ignore_url_matcher = get_url_matcher(conf_def.ignore_url)
-        else:
-            self.ignore_url_matcher = lambda url: False
-
-    def get_dirname(self, res: Response) -> Optional[str]:
-        structure_path = res.meta["structure_path"]
-        current_structure_node = self.root_structure_node.get_node_by_path(
-            structure_path
-        )
-        assert isinstance(current_structure_node, DirStructureNode)
-        dirname = current_structure_node.dirname_extractor(res)
-        return dirname
-
-    def get_url_infos(self, res: Response) -> List["SiteUrlInfo"]:
-        urls = res.css("a::attr(href)").getall() + res.css("img::attr(src)").getall()
-        urls = list(map(res.urljoin, urls))
-
-        structure_path = res.meta["structure_path"]
-        file_path = res.meta["file_path"]
-        current_structure_node = self.root_structure_node.get_node_by_path(
-            structure_path
-        )
-        assert not isinstance(current_structure_node, FileStructureNode)
-
-        unknown_urls = []
-        url_infos = []
-
-        def strip_frament(url: str) -> str:
-            return urldefrag(url)[0]
-
-        urls = list(map(strip_frament, urls))
-
-        url_seen = set()
-        for url in urls:
-            if url in url_seen:
-                continue
-            url_seen.add(url)
-
-            if self.ignore_url_matcher(url):
-                continue
-
-            url_info: Optional[SiteUrlInfo] = None
-
-            for index, child_structure_node in enumerate(
-                current_structure_node.children
-            ):
-                if child_structure_node.url_matcher(url):
-                    url_structure_path = structure_path + [index]
-                    if isinstance(child_structure_node, NoDirStructureNode):
-                        url_info = NoDirSiteUrlInfo(
-                            url=url,
-                            structure_path=url_structure_path,
-                            file_path=file_path,
-                        )
-                    elif isinstance(child_structure_node, DirStructureNode):
-                        url_info = DirSiteUrlInfo(
-                            url=url,
-                            structure_path=url_structure_path,
-                            parent_file_path=file_path,
-                        )
-                    else:
-                        assert isinstance(child_structure_node, FileStructureNode)
-                        filename = child_structure_node.filename_extractor(url)
-                        url_info = FileSiteUrlInfo(
-                            url=url,
-                            structure_path=url_structure_path,
-                            file_path=file_path + [filename],
-                        )
-                    break
-
-            if url_info is None:
-                # check same depth page
-                if (
-                    isinstance(current_structure_node, BaseDirStructureNode)
-                    and current_structure_node.paging
-                    and current_structure_node.url_matcher(url)
-                ):
-                    if isinstance(current_structure_node, NoDirStructureNode):
-                        url_info = NoDirSiteUrlInfo(
-                            url=url,
-                            structure_path=structure_path,
-                            file_path=file_path,
-                        )
-                    else:
-                        assert isinstance(current_structure_node, DirStructureNode)
-                        url_info = DirSiteUrlInfo(
-                            url=url,
-                            structure_path=structure_path,
-                            parent_file_path=file_path[:-1],
-                        )
-                else:
-                    if not self.root_structure_node.match_any(url):
-                        unknown_urls.append(url)
-                    continue
-
-            assert url_info is not None
-
-            url_infos.append(url_info)
-
-        if 0 < len(unknown_urls):
-            raise MediaScrapyError(
-                f"Unknown url found, please put these in ignore_url: {unknown_urls} in (url={res.url}, structure_path={structure_path}, file_path={file_path})"
+    def get_url_infos(self, res: Response) -> List["UrlInfo"]:
+        if "url_info" not in res.meta:
+            # first request
+            return self.get_url_infos_with_parent_impl(
+                res,
+                parent_structure_path=[],
+                parent_link_el=Selector(
+                    f"<a href='{html.escape(res.url)}'>{res.xpath('//title/text()').get()}</a>"
+                ),
+                original_parent_file_path=".",
             )
+        else:
+            assert isinstance(res.meta["url_info"], ParseUrlInfo)
+            return self.get_url_infos_with_parent_url_info(res, res.meta["url_info"])
 
-        # print(f'Url found {[info["url"] for info in url_infos]} in (url={res.url}, structure_path={structure_path}, file_path={file_path})')
+    def get_url_infos_with_parent_url_info(
+        self, res: Response, parent_url_info: "ParseUrlInfo"
+    ) -> List["UrlInfo"]:
+        return self.get_url_infos_with_parent_impl(
+            res,
+            parent_structure_path=parent_url_info.structure_path,
+            parent_link_el=parent_url_info.link_el,
+            parent_url_match=parent_url_info.url_match,
+            original_parent_file_path=parent_url_info.file_path,
+        )
+
+    def get_url_infos_with_parent_impl(
+        self,
+        res: Response,
+        parent_structure_path: List[int],
+        original_parent_file_path: str,
+        parent_link_el: Selector,
+        parent_url_match: Optional[re.Match] = None,
+    ) -> List["UrlInfo"]:
+        parent_structure_node = self.root_structure_node.get_node_by_path(
+            parent_structure_path
+        )
+
+        content_node = parent_structure_node.get_content_node(
+            url=res.url,
+            link_el=parent_link_el,
+            url_match=parent_url_match,
+            res=res,
+        )
+        parent_structure_node.assert_content(
+            url=res.url,
+            link_el=parent_link_el,
+            url_match=parent_url_match,
+            res=res,
+            content_node=content_node,
+        )
+        parent_file_path_component = (
+            parent_structure_node.get_file_path_component_after_request(
+                url=res.url,
+                link_el=parent_link_el,
+                url_match=parent_url_match,
+                res=res,
+                content_node=content_node,
+            )
+        )
+        parent_file_path = original_parent_file_path
+        if parent_file_path_component is not None:
+            parent_file_path = path.join(parent_file_path, parent_file_path_component)
+
+        if parent_structure_node.is_leaf():
+            if parent_structure_node.needs_request_for_file_content():
+                file_content = parent_structure_node.extract_file_content(
+                    url=res.url,
+                    link_el=parent_link_el,
+                    url_match=parent_url_match,
+                    res=res,
+                    content_node=content_node,
+                )
+            else:
+                file_content = res.body
+
+            return [
+                FileContentUrlInfo(
+                    url=res.url, file_path=parent_file_path, file_content=file_content
+                )
+            ]
+
+        link_infos = None
+
+        url_infos: List[UrlInfo] = []
+        url_info: UrlInfo
+
+        # search next page
+        if parent_structure_node.paging:
+            link_infos = (
+                get_links(res, content_node) if link_infos is None else link_infos
+            )
+            for link_el, url in link_infos:
+                is_url_matched, url_match = parent_structure_node.match_url(url)
+                if is_url_matched:
+                    assert not parent_structure_node.is_leaf()
+                    converted_url = parent_structure_node.convert_url(
+                        url=url, link_el=link_el, url_match=url_match
+                    )
+                    next_page_file_path = original_parent_file_path
+                    if parent_structure_node.can_get_file_path_before_request():
+                        next_page_file_path = path.dirname(next_page_file_path)
+                        file_path_component = parent_structure_node.get_file_path_component_before_request(
+                            url=converted_url, link_el=link_el, url_match=url_match
+                        )
+                        assert isinstance(file_path_component, str)
+                        next_page_file_path = path.join(
+                            next_page_file_path, file_path_component
+                        )
+                    url_info = ParseUrlInfo(
+                        url=converted_url,
+                        file_path=next_page_file_path,
+                        structure_path=parent_structure_path,
+                        link_el=link_el,
+                        url_match=url_match,
+                    )
+                    url_infos.append(url_info)
+
+        forwardable_structure_node_found = False
+
+        for structure_index, structure_node in enumerate(
+            parent_structure_node.children
+        ):
+            if structure_node.needs_no_request() or parent_structure_node.is_root:
+                if parent_structure_node.is_root:
+                    parent_url_is_matched, parent_url_match = structure_node.match_url(
+                        res.url
+                    )
+                    if not parent_url_is_matched:
+                        continue
+
+                forwardable_structure_node_found = True
+
+                file_path_component = (
+                    structure_node.get_file_path_component_before_request(
+                        url=res.url, link_el=parent_link_el, url_match=parent_url_match
+                    )
+                )
+                file_path = parent_file_path
+                if file_path_component is not None:
+                    file_path = path.join(file_path, file_path_component)
+
+                converted_url = structure_node.convert_url(
+                    url=res.url,
+                    link_el=parent_link_el,
+                    url_match=parent_url_match,
+                )
+
+                url_info = ParseUrlInfo(
+                    url=converted_url,
+                    file_path=file_path,
+                    structure_path=parent_structure_path + [structure_index],
+                    link_el=parent_link_el,
+                    url_match=parent_url_match,
+                )
+                sub_url_infos = self.get_url_infos_with_parent_url_info(res, url_info)
+                url_infos.extend(sub_url_infos)
+            else:
+                link_infos = (
+                    get_links(res, content_node) if link_infos is None else link_infos
+                )
+                for link_el, url in link_infos:
+                    is_url_matched, url_match = structure_node.match_url(url)
+                    if is_url_matched:
+                        file_path_component = (
+                            structure_node.get_file_path_component_before_request(
+                                url=url, link_el=link_el, url_match=url_match
+                            )
+                        )
+                        file_path = parent_file_path
+                        if file_path_component is not None:
+                            file_path = path.join(file_path, file_path_component)
+
+                        converted_url = structure_node.convert_url(
+                            url=url, link_el=link_el, url_match=url_match
+                        )
+                        needs_request_for_file = (
+                            structure_node.needs_request_for_file_path()
+                            or structure_node.needs_request_for_file_content()
+                        )
+
+                        if structure_node.is_leaf() and not needs_request_for_file:
+                            if structure_node.can_get_file_content_before_request():
+                                file_content = structure_node.extract_file_content_without_response(
+                                    url=converted_url,
+                                    link_el=link_el,
+                                    url_match=url_match,
+                                )
+                                url_info = FileContentUrlInfo(
+                                    url=converted_url,
+                                    file_path=file_path,
+                                    file_content=file_content,
+                                )
+                            else:
+                                url_info = DownloadUrlInfo(
+                                    url=converted_url,
+                                    file_path=file_path,
+                                )
+                        else:
+                            structure_path = parent_structure_path + [structure_index]
+                            url_info = ParseUrlInfo(
+                                url=converted_url,
+                                file_path=file_path,
+                                structure_path=structure_path,
+                                link_el=link_el,
+                                url_match=url_match,
+                            )
+                        url_infos.append(url_info)
+
+        if not forwardable_structure_node_found and parent_structure_node.is_root:
+            raise MediaScrapyError(f"Start url doesn't much first url definition")
 
         return url_infos
 
@@ -160,42 +275,105 @@ class SiteConfig:
 LoginConfig = namedtuple("LoginConfig", ["url", "formdata"])
 
 
+@typechecked
 @dataclass
-class SiteUrlInfo:
+class UrlInfo:
     url: str
+    file_path: str
+
+
+@typechecked
+@dataclass
+class DownloadUrlInfo(UrlInfo):
+    pass
+
+
+@typechecked
+@dataclass
+class FileContentUrlInfo(UrlInfo):
+    file_content: bytes
+
+
+@typechecked
+@dataclass
+class ParseUrlInfo(UrlInfo):
+    link_el: Selector
     structure_path: List[int]
+    url_match: Optional[re.Match]
 
 
-@dataclass
-class NoDirSiteUrlInfo(SiteUrlInfo):
-    file_path: List[str]
-
-
-@dataclass
-class FileSiteUrlInfo(SiteUrlInfo):
-    file_path: List[str]
-
-
-@dataclass
-class DirSiteUrlInfo(SiteUrlInfo):
-    parent_file_path: List[str]
-
-
+@typechecked
 class StructureNode:
-    children: List["NonRootStructureNode"]
+    children: List["StructureNode"]
     parent: Optional["StructureNode"]
+    url_matcher: Optional[Callable[[str], Union[bool, re.Match]]]
+    url_converter: Optional[Callable[..., str]]
+    content_node_extractor: Optional[Callable[..., SelectorList]]
+    file_content_extractor: Optional[Callable[..., Union[str, bytes]]]
+    file_path_extractor: Optional[Callable[..., str]]
+    assertion_matcher: Optional[Callable[..., None]]
+    paging: bool
+    is_root: bool
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        url_matcher: Optional[Callable[[str], Union[bool, re.Match]]] = None,
+        url_converter: Optional[Callable[..., str]] = None,
+        content_node_extractor: Optional[Callable[..., SelectorList]] = None,
+        file_content_extractor: Optional[Callable[..., Union[str, bytes]]] = None,
+        file_path_extractor: Optional[Callable[..., str]] = None,
+        assertion_matcher: Optional[Callable[..., None]] = None,
+        paging: bool = False,
+        is_root: bool = False,
+    ) -> None:
         self.children = []
         self.parent = None
+        self.url_matcher = url_matcher
+        self.url_converter = url_converter
+        self.content_node_extractor = content_node_extractor
+        self.file_content_extractor = file_content_extractor
+        self.file_path_extractor = file_path_extractor
+        self.assertion_matcher = assertion_matcher
+        self.paging = paging
+        self.is_root = is_root
 
-    def add(self, node: "NonRootStructureNode") -> None:
+    def needs_no_request(self) -> bool:
+        return self.url_matcher is None
+
+    def is_leaf(self) -> bool:
+        return len(self.children) == 0
+
+    def needs_request_for_file_path(self) -> bool:
+        if self.file_path_extractor is None:
+            return False
+        else:
+            return needs_request_for_function(self.file_path_extractor)
+
+    def can_get_file_path_before_request(self) -> bool:
+        if self.file_path_extractor is None:
+            return False
+        else:
+            return not needs_request_for_function(self.file_path_extractor)
+
+    def needs_request_for_file_content(self) -> bool:
+        if self.file_content_extractor is None:
+            return False
+        else:
+            return needs_request_for_function(self.file_content_extractor)
+
+    def can_get_file_content_before_request(self) -> bool:
+        if self.file_content_extractor is None:
+            return False
+        else:
+            return not needs_request_for_function(self.file_content_extractor)
+
+    def add(self, node: "StructureNode") -> None:
         assert isinstance(node, StructureNode)
         assert node.parent is None
         node.parent = self
         self.children.append(node)
 
-    def delete(self, node: "NonRootStructureNode") -> None:
+    def delete(self, node: "StructureNode") -> None:
         assert self == node.parent
         index = self.children.index(node)
         self.children = self.children[:index] + self.children[index + 1 :]
@@ -211,306 +389,643 @@ class StructureNode:
             child_node = self.children[child_index]
             return child_node.get_node_by_path(path[1:])
 
-    def match_any(self, url: str) -> bool:
-        return any(matcher(url) for matcher in self.get_all_url_matchers())
+    def match_url(self, url: str) -> Tuple[bool, Optional[re.Match]]:
+        if self.url_matcher is None:
+            return False, None
+        else:
+            matched = self.url_matcher(url)
+            if isinstance(matched, bool):
+                return matched, None
+            else:
+                assert isinstance(matched, re.Match)
+                return True, matched
 
-    def get_all_url_matchers(self) -> List[Callable[[str], bool]]:
-        url_matchers = []
+    def convert_url(
+        self,
+        url: str,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+    ) -> str:
+        if self.url_converter is not None:
+            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
+            result = call_only_with_acceptable_kwargs(self.url_converter, kwargs)
+            return result
+        else:
+            return url
+
+    def get_content_node(
+        self,
+        url: str,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+        res: Response,
+    ) -> SelectorList:
+        if self.content_node_extractor:
+            kwargs = {
+                "url": url,
+                "link_el": link_el,
+                "url_match": url_match,
+                "res": res,
+            }
+            result = call_only_with_acceptable_kwargs(
+                self.content_node_extractor, kwargs
+            )
+            return result
+        else:
+            return SelectorList([res.selector])
+
+    def get_file_path_component_before_request(
+        self,
+        url: str,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+    ) -> Optional[str]:
+        if (
+            self.file_path_extractor is not None
+            and not self.needs_request_for_file_path()
+        ):
+            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
+            result = call_only_with_acceptable_kwargs(self.file_path_extractor, kwargs)
+            assert isinstance(result, str)
+            return result
+        else:
+            return None
+
+    def get_file_path_component_after_request(
+        self,
+        url: str,
+        res: Response,
+        content_node: SelectorList,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+    ) -> Optional[str]:
+        if self.needs_request_for_file_path():
+            assert self.file_path_extractor is not None
+            kwargs = {
+                "url": url,
+                "res": res,
+                "content_node": content_node,
+                "link_el": link_el,
+                "url_match": url_match,
+            }
+            result = call_only_with_acceptable_kwargs(self.file_path_extractor, kwargs)
+            assert isinstance(result, str)
+            return result
+        else:
+            return None
+
+    def extract_file_content(
+        self,
+        url: str,
+        res: Response,
+        content_node: SelectorList,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+    ) -> bytes:
+        assert (
+            self.file_content_extractor is not None
+        )  # call needs_request_for_file_content in advace
+        return self.extract_file_content_impl(
+            {
+                "url": url,
+                "res": res,
+                "content_node": content_node,
+                "link_el": link_el,
+                "url_match": url_match,
+            }
+        )
+
+    def extract_file_content_without_response(
+        self,
+        url: str,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+    ) -> bytes:
+        assert (
+            self.file_content_extractor is not None
+        )  # call can_get_file_content_before_request in advace
+        return self.extract_file_content_impl(
+            {
+                "url": url,
+                "link_el": link_el,
+                "url_match": url_match,
+            }
+        )
+
+    def extract_file_content_impl(self, kwargs: Dict[str, Any]) -> bytes:
+        assert self.file_content_extractor is not None
+        file_content = call_only_with_acceptable_kwargs(
+            self.file_content_extractor, kwargs
+        )
+        if isinstance(file_content, str):
+            return file_content.encode("utf-8")
+        else:
+            assert isinstance(file_content, bytes)
+            return file_content
+
+    def assert_content(
+        self,
+        url: str,
+        res: Response,
+        content_node: SelectorList,
+        link_el: Optional[Selector],
+        url_match: Optional[re.Match],
+    ) -> None:
+        if self.assertion_matcher is not None:
+            kwargs = {
+                "url": url,
+                "res": res,
+                "content_node": content_node,
+                "link_el": link_el,
+                "url_match": url_match,
+            }
+            call_only_with_acceptable_kwargs(self.assertion_matcher, kwargs)
+
+    def check(self) -> None:
+        if not self.is_leaf() and self.file_content_extractor is not None:
+            raise MediaScrapyError(
+                f"Leaf definition can only have file_content directive"
+            )
+
         for child_node in self.children:
-            child_url_matchers = child_node.get_all_url_matchers()
-            url_matchers.extend(child_url_matchers)
-        return url_matchers
+            child_node.check()
 
 
-class RootStructureNode(StructureNode):
-    pass
+def get_links(res: Response, content_node: SelectorList) -> List[Tuple[Selector, str]]:
+    results = []
+    for link_el in content_node.xpath(".//*[@href | @src]"):
+        node_name = link_el.xpath("name(.)").get()
+        if node_name in {"a", "area", "link"} and "href" in link_el.attrib:
+            url = link_el.attrib["href"]
+        elif (
+            node_name
+            in {
+                "img",
+                "embed",
+                "iframe",
+                "img",
+                "input",
+                "script",
+                "source",
+                "track",
+                "video",
+            }
+            and "src" in link_el.attrib
+        ):
+            url = link_el.attrib["src"]
+        elif "href" in link_el.attrib:
+            url = link_el.attrib["href"]
+        elif "src" in link_el.attrib:
+            url = link_el.attrib["src"]
+        else:
+            assert False
+        url = res.urljoin(url)
+        results.append((link_el, url))
+    return results
 
 
-class NonRootStructureNode(StructureNode):
-    url_matcher: Callable[[str], bool]
+@typechecked
+def parse_structure_list(
+    structure_node_def_list: List[Union[List, Dict, str]]
+) -> StructureNode:
+    root_node = StructureNode(is_root=True)
+    no_more_node = False
 
-    def __init__(self, url_matcher: Callable[[str], bool]) -> None:
-        super().__init__()
-        self.url_matcher = url_matcher
-
-    def get_all_url_matchers(self) -> List[Callable[[str], bool]]:
-        url_matchers = super().get_all_url_matchers()
-        url_matchers.append(self.url_matcher)
-        return url_matchers
-
-
-class BaseDirStructureNode(NonRootStructureNode):
-    paging: bool
-
-    def __init__(
-        self, url_matcher: Callable[[str], bool], paging: bool = False
-    ) -> None:
-        super().__init__(url_matcher)
-        self.paging = paging
-
-
-class NoDirStructureNode(BaseDirStructureNode):
-    pass
-
-
-class DirStructureNode(BaseDirStructureNode):
-    dirname_extractor: Callable[[Response], Optional[str]]
-
-    def __init__(
-        self,
-        url_matcher: Callable[[str], bool],
-        dirname_extractor: Callable[[Response], Optional[str]],
-        paging: bool = False,
-    ) -> None:
-        super().__init__(url_matcher, paging)
-        self.dirname_extractor = dirname_extractor
-
-
-class FileStructureNode(NonRootStructureNode):
-    filename_extractor: Callable[[str], str]
-
-    def __init__(
-        self,
-        url_matcher: Callable[[str], bool],
-        filename_extractor: Callable[[str], str],
-    ) -> None:
-        super().__init__(url_matcher)
-        self.filename_extractor = filename_extractor
-
-    def add(self, node: NonRootStructureNode) -> None:
-        assert False
-
-    def delete(self, node: NonRootStructureNode) -> None:
-        assert False
-
-
-def parse_structure(structure_def: List[Any]) -> RootStructureNode:
-    root_node = RootStructureNode()
-    no_more_parent_node = False
-
-    parent_node: StructureNode = root_node
-    for structure_node_def in structure_def:
-        if no_more_parent_node:
+    parent_node = root_node
+    for structure_node_def in structure_node_def_list:
+        if no_more_node:
             raise MediaScrapyError(
                 f"Unable to add new structure here: {structure_node_def}"
             )
 
-        node: NonRootStructureNode
-        if isinstance(structure_node_def, str):
-            url_matcher = get_url_matcher(structure_node_def)
-            node = NoDirStructureNode(url_matcher=url_matcher)
-            parent_node.add(node)
-            parent_node = node
-        elif isinstance(structure_node_def, dict):
-            validate(
-                structure_node_def,
-                Schema(
-                    Or(
-                        {"url": UrlMatcherSchema(), SchemaOptional("paging"): bool},
-                        {
-                            "dirname": DirnameExtractorSchema(),
-                            "url": UrlMatcherSchema(),
-                            SchemaOptional("paging"): bool,
-                        },
-                        {
-                            "filename": FilenameExtractorSchema(),
-                            "url": UrlMatcherSchema(),
-                        },
-                    )
-                ),
-            )
-            url_matcher = get_url_matcher(structure_node_def["url"])
-            if "dirname" in structure_node_def:
-                dirname_extractor = get_dirname_extractor(structure_node_def["dirname"])
-                paging = (
-                    structure_node_def["paging"]
-                    if "paging" in structure_node_def
-                    else False
-                )
-                node = DirStructureNode(
-                    url_matcher=url_matcher,
-                    dirname_extractor=dirname_extractor,
-                    paging=paging,
-                )
-            elif "filename" in structure_node_def:
-                filename_extractor = get_filename_extractor(
-                    structure_node_def["filename"]
-                )
-                node = FileStructureNode(
-                    url_matcher=url_matcher,
-                    filename_extractor=filename_extractor,
-                )
-                no_more_parent_node = True
-            else:
-                paging = (
-                    structure_node_def["paging"]
-                    if "paging" in structure_node_def
-                    else False
-                )
-                node = NoDirStructureNode(url_matcher=url_matcher, paging=paging)
-
+        if isinstance(structure_node_def, dict) or isinstance(structure_node_def, str):
+            node = parse_structure(structure_node_def)
             parent_node.add(node)
             parent_node = node
         elif isinstance(structure_node_def, list):
-            for sub_structure_def in structure_node_def:
-                sub_root_node = parse_structure(sub_structure_def)
-                assert len(sub_root_node.children) == 1
-                node = sub_root_node.children[0]
-                sub_root_node.delete(node)
-                parent_node.add(node)
-            no_more_parent_node = True
+            for sub_structure_node_def_list in structure_node_def:
+                sub_root_node = parse_structure_list(sub_structure_node_def_list)
+                assert sub_root_node.is_root
+                for sub_node in sub_root_node.children:
+                    assert not sub_node.is_root
+                    sub_root_node.delete(sub_node)
+                    parent_node.add(sub_node)
+            no_more_node = True
         else:
             raise MediaScrapyError(
                 f"Invalid structure definition: {structure_node_def}"
             )
 
+    root_node.check()
+
     return root_node
 
 
-class FilenameExtractorSchema(Schema):
-    def __init__(
-        self, schema: Optional[Schema] = None, error: Optional[Exception] = None
-    ) -> None:
-        if schema is None:
-            schema = object
-        super().__init__(schema, error)
-
-    def validate(
-        self,
-        filename_extractor_def: Union[str, Callable[[str], str]],
-        _is_filename_extractor_schema: bool = True,
-    ) -> Union[str, Callable[[str], str]]:
-        data = super(FilenameExtractorSchema, self).validate(
-            filename_extractor_def, _is_filename_extractor_schema=False
-        )
-        if _is_filename_extractor_schema:
-            if isinstance(filename_extractor_def, str):
-                try:
-                    regex = re.compile(filename_extractor_def)
-                except re.error as err:
-                    raise SchemaError(
-                        f"Invalid regular expression: {filename_extractor_def}"
-                    ) from err
-            elif callable(filename_extractor_def):
-                pass
-            else:
-                assert False
-        return filename_extractor_def
-
-
-def get_filename_extractor(
-    filename_extractor_def: Union[str, Callable[[str], str]]
-) -> Callable[[str], str]:
-    validate(filename_extractor_def, FilenameExtractorSchema())
-    if isinstance(filename_extractor_def, str):
-        regex = re.compile(filename_extractor_def)
-
-        def filename_extractor(url: str) -> str:
-            if regex.fullmatch(url) is None:
-                raise MediaScrapyError(f"Invalid file url: {url} {regex}")
-            return regex.sub(r"\g<1>", url)
-
-        return filename_extractor
-    elif callable(filename_extractor_def):
-        return filename_extractor_def
+@typechecked
+def parse_structure(structure_node_def: Union[Dict, str]) -> StructureNode:
+    if isinstance(structure_node_def, str):
+        url_matcher = UrlMatcherSchema().validate(structure_node_def)
+        return StructureNode(url_matcher=url_matcher)
     else:
-        assert False
+        structure_node_parsed = Schema(
+            {
+                SchemaOptional("url", default=None): UrlMatcherSchema(),
+                SchemaOptional("as_url", default=None): UrlConverterSchema(),
+                SchemaOptional("content", default=None): ContentNodeExtractorSchema(),
+                SchemaOptional("file_content", default=None): ContentExtractorSchema(),
+                SchemaOptional("file_path", default=None): FilePathExtractorSchema(),
+                SchemaOptional("assert", default=None): AssertionMatcherSchema(),
+                SchemaOptional("paging", default=False): bool,
+            },
+        ).validate(structure_node_def)
 
-
-class DirnameExtractorSchema(Schema):
-    def __init__(
-        self, schema: Optional[Schema] = None, error: Optional[Exception] = None
-    ) -> None:
-        if schema is None:
-            schema = object
-        super().__init__(schema, error)
-
-    def validate(
-        self,
-        dirname_extractor_def: Callable[[Response], str],
-        _is_dirname_extractor_schema: bool = True,
-    ) -> Callable[[Response], str]:
-        data = super(DirnameExtractorSchema, self).validate(
-            dirname_extractor_def, _is_dirname_extractor_schema=False
+        return StructureNode(
+            url_matcher=structure_node_parsed["url"],
+            url_converter=structure_node_parsed["as_url"],
+            content_node_extractor=structure_node_parsed["content"],
+            file_content_extractor=structure_node_parsed["file_content"],
+            file_path_extractor=structure_node_parsed["file_path"],
+            assertion_matcher=structure_node_parsed["assert"],
+            paging=structure_node_parsed["paging"],
         )
-        if _is_dirname_extractor_schema:
-            if callable(dirname_extractor_def):
-                pass
-            else:
-                assert False
-        return dirname_extractor_def
 
 
-def get_dirname_extractor(
-    dirname_extractor_def: Callable[[Response], str]
-) -> Callable[[Response], str]:
-    validate(dirname_extractor_def, DirnameExtractorSchema())
-    assert callable(dirname_extractor_def)
-    return dirname_extractor_def
+@typechecked
+class RegexSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def validate(self, regex_def: Union[str, re.Pattern]) -> re.Pattern:
+        try:
+            regex = re.compile(regex_def)
+        except re.error as err:
+            raise SchemaError(f"Invalid regular expression: {regex_def}") from err
+        return regex
 
 
+@typechecked
 class UrlMatcherSchema(Schema):
-    def __init__(
-        self, schema: Optional[Schema] = None, error: Optional[Exception] = None
-    ) -> None:
-        if schema is None:
-            schema = object
-        super().__init__(schema, error)
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.regex_schema = RegexSchema()
 
     def validate(
         self,
-        url_matcher_def: Union[str, Callable[[str], bool], List[Any]],
-        _is_url_matcher_schema: bool = True,
-    ) -> Union[str, Callable[[str], bool], List[Any]]:
-        data = super(UrlMatcherSchema, self).validate(
-            url_matcher_def, _is_url_matcher_schema=False
+        url_matcher_def: Union[
+            str,
+            Callable[[str], Union[bool, re.Match, None]],
+        ],
+    ) -> Callable[[str], Union[bool, re.Match]]:
+        if isinstance(url_matcher_def, str) or isinstance(url_matcher_def, re.Pattern):
+            regex = self.regex_schema.validate(url_matcher_def)
+
+            def url_matcher(url: str) -> Union[bool, re.Match]:
+                url_match = regex.fullmatch(url)
+                if url_match is None:
+                    return False
+                else:
+                    return url_match
+
+            return url_matcher
+
+        elif callable(url_matcher_def):
+            assert accepts_argument_count(url_matcher_def, 1)
+            url_matcher_impl = url_matcher_def
+
+            def url_matcher(url: str) -> Union[bool, re.Match]:
+                result = url_matcher_impl(url)
+                if result is None:
+                    return False
+                else:
+                    return result
+
+            return url_matcher
+
+        else:
+            raise SchemaError(f"Unknown url matcher type: {url_matcher_def}")
+
+
+@typechecked
+class UrlConverterSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def validate(
+        self, definition: Union[str, Callable[..., Optional[str]]]
+    ) -> Callable[..., str]:
+        if isinstance(definition, str):
+            match_expansion_template = definition
+
+            def url_converter(url_match: Optional[re.Match]) -> str:
+                if url_match is None:
+                    return match_expansion_template
+                else:
+                    return url_match.expand(match_expansion_template)
+
+            return url_converter
+
+        assert callable(definition)
+
+        check_supports_named_args_for_function(
+            definition, {"url", "link_el", "url_match"}
         )
-        if _is_url_matcher_schema:
-            if isinstance(url_matcher_def, str):
-                try:
-                    regex = re.compile(url_matcher_def)
-                except re.error as err:
-                    raise SchemaError(
-                        f"Invalid regular expression: {url_matcher_def}"
-                    ) from err
-            elif isinstance(url_matcher_def, list):
-                for sub_url_matcher_def in url_matcher_def:
-                    self.validate(sub_url_matcher_def)
-            elif callable(url_matcher_def):
-                pass
-            else:
-                raise SchemaError(f"Unknown url matcher type: {url_matcher_def}")
-        return url_matcher_def
+
+        return wrap_function_return_non_optional(definition, accepts_response=False)
 
 
-def get_url_matcher(
-    url_matcher_def: Union[str, Callable[[str], bool], List[Any]]
-) -> Callable[[str], bool]:
-    validate(url_matcher_def, UrlMatcherSchema())
-    if isinstance(url_matcher_def, str):
-        regex = re.compile(url_matcher_def)
+@typechecked
+class ContentNodeExtractorSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
 
-        def url_matcher(url: str) -> bool:
-            return regex.fullmatch(url) is not None
+    def validate(
+        self, definition: Union[str, Callable[..., SelectorList]]
+    ) -> Callable[..., SelectorList]:
+        if isinstance(definition, str):
+            xpath = definition
 
-        return url_matcher
-    elif isinstance(url_matcher_def, list):
-        sub_url_matchers = []
-        for sub_url_matcher_def in url_matcher_def:
-            sub_url_matchers.append(get_url_matcher(sub_url_matcher_def))
+            def content_node_extractor(res: Response) -> SelectorList:
+                return cast(SelectorList, res.xpath(xpath))
 
-        def url_matcher(url: str) -> bool:
-            return any(matcher(url) for matcher in sub_url_matchers)
+            return content_node_extractor
 
-        return url_matcher
-    elif callable(url_matcher_def):
-        return url_matcher_def
+        assert callable(definition)
+
+        check_supports_named_args_for_function(
+            definition, {"url", "link_el", "url_match", "res"}
+        )
+
+        return definition
+
+
+@typechecked
+class FilePathExtractorSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def validate(
+        self, definition: Union[str, Callable[..., Optional[str]]]
+    ) -> Callable[..., str]:
+        if isinstance(definition, str):
+            match_expansion_template = definition
+
+            def file_path_extractor(url_match: Optional[re.Match]) -> str:
+                if url_match is None:
+                    return match_expansion_template
+                else:
+                    return url_match.expand(match_expansion_template)
+
+            return file_path_extractor
+
+        assert callable(definition)
+
+        check_supports_named_args_for_function(
+            definition, {"url", "link_el", "url_match", "res", "content_node"}
+        )
+
+        return wrap_function_return_non_optional(definition, accepts_response=True)
+
+
+@typechecked
+class ContentExtractorSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def validate(
+        self, definition: Union[str, Callable[..., Union[str, bytes, None]]]
+    ) -> Callable[..., Union[str, bytes]]:
+        if isinstance(definition, str):
+            xpath = definition
+
+            def content_extractor(content_node: SelectorList) -> str:
+                content = content_node.xpath(xpath).getall()
+                return json.dumps(content)
+
+            return content_extractor
+
+        assert callable(definition)
+
+        check_supports_named_args_for_function(
+            definition, {"url", "link_el", "url_match", "res", "content_node"}
+        )
+
+        return wrap_function_return_non_optional(definition, accepts_response=True)
+
+
+@typechecked
+class AssertionMatcherSchema(Schema):
+    def __init__(self) -> None:
+        super().__init__(None)
+
+    def validate(
+        self, assertion_matcher_def: Union[str, Callable[..., bool], List]
+    ) -> Callable[..., None]:
+        if isinstance(assertion_matcher_def, list):
+            sub_matchers = []
+            for sub_assertion_matcher_def in assertion_matcher_def:
+                sub_matcher = self.validate(sub_assertion_matcher_def)
+                sub_matchers.append(sub_matcher)
+
+            def multiple_assertion_matcher(
+                url: str,
+                link_el: Selector,
+                url_match: re.Match,
+                res: Response,
+                content_node: SelectorList,
+            ) -> None:
+                kwargs = {
+                    "url": url,
+                    "link_el": link_el,
+                    "url_match": url_match,
+                    "res": res,
+                    "content_node": content_node,
+                }
+                for sub_matcher in sub_matchers:
+                    call_only_with_acceptable_kwargs(sub_matcher, kwargs)
+
+            return multiple_assertion_matcher
+
+        if isinstance(assertion_matcher_def, str):
+            xpath = assertion_matcher_def
+
+            def xpath_assertion_matcher(content_node: SelectorList) -> None:
+                if content_node.xpath(f"boolean({xpath})").get() == "0":
+                    raise AssertionError(f"AssertionMatcher failed xpath: {xpath}")
+
+            return xpath_assertion_matcher
+
+        assert callable(assertion_matcher_def)
+
+        check_supports_named_args_for_function(
+            assertion_matcher_def,
+            {"url", "link_el", "url_match", "res", "content_node"},
+        )
+
+        assertion_matcher_impl = assertion_matcher_def
+
+        def assertion_matcher(
+            url: str,
+            link_el: Selector,
+            url_match: re.Match,
+            res: Response,
+            content_node: SelectorList,
+        ) -> None:
+            kwargs = {
+                "url": url,
+                "link_el": link_el,
+                "url_match": url_match,
+                "res": res,
+                "content_node": content_node,
+            }
+            if not call_only_with_acceptable_kwargs(assertion_matcher_impl, kwargs):
+                matcher_source = f"\n{inspect.getsource(assertion_matcher_impl)}\n"
+                raise AssertionError(
+                    f"AssertionMatcher failed in function: {matcher_source}"
+                )
+
+        return assertion_matcher
+
+
+T = TypeVar("T")
+
+
+@typechecked
+def wrap_function_return_non_optional(
+    fn: Callable[..., Optional[T]], accepts_response: bool
+) -> Callable[..., T]:
+    def raise_if_none(result: Optional[T]) -> T:
+        if result is not None:
+            return result
+        else:
+            fn_source = f"\n{inspect.getsource(fn)}\n"
+            raise MediaScrapyError(f"Return None value from function: {fn_source}")
+
+    if accepts_response and needs_request_for_function(fn):
+
+        def non_optional_response_function_wrapper(
+            url: str,
+            link_el: Selector,
+            url_match: re.Match,
+            res: Response,
+            content_node: SelectorList,
+        ) -> T:
+            kwargs = {
+                "url": url,
+                "link_el": link_el,
+                "url_match": url_match,
+                "res": res,
+                "content_node": content_node,
+            }
+            return raise_if_none(call_only_with_acceptable_kwargs(fn, kwargs))
+
+        return non_optional_response_function_wrapper
     else:
-        assert False
+
+        def non_optional_function_wrapper(
+            url: str, link_el: Selector, url_match: re.Match
+        ) -> T:
+            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
+            return raise_if_none(call_only_with_acceptable_kwargs(fn, kwargs))
+
+        return non_optional_function_wrapper
 
 
-def validate(obj: Any, schema: Schema) -> None:
-    try:
-        schema.validate(obj)
-    except SchemaError as err:
-        raise MediaScrapyError(f"Site config schema error: {str(err)}") from err
+@typechecked
+def needs_request_for_function(fn: Callable[..., Any]) -> bool:
+    acceptable_named_args = set(get_all_acceptable_named_args(fn))
+    return any(arg in acceptable_named_args for arg in ["res", "content_node"])
+
+
+@typechecked
+def call_only_with_acceptable_kwargs(fn: Callable[..., T], kwargs: Dict[str, Any]) -> T:
+    if accepts_all_kwargs(fn):
+        return fn(**kwargs)
+    else:
+        acceptable_named_args = get_all_acceptable_named_args(fn)
+        acceptable_kwargs = {
+            k: v for k, v in kwargs.items() if k in acceptable_named_args
+        }
+        """
+        none_value_arg_keys = [
+            arg_key
+            for arg_key, arg_value in acceptable_kwargs.items()
+            if arg_value is None
+        ]
+        if 0 < len(none_value_arg_keys):
+            raise MediaScrapyError(
+                f"Function required argument is None: {', '.join(none_value_arg_keys)}"
+            )
+        """
+        return fn(**acceptable_kwargs)
+
+
+@typechecked
+def check_supports_named_args_for_function(
+    extractor_fn: Callable, to_be_passed_named_args: Set[str]
+) -> None:
+    if not accepts_all_kwargs(extractor_fn):
+        required_named_args = get_all_required_named_args(extractor_fn)
+        not_to_be_passed_named_args = list(
+            filter(lambda arg: arg not in to_be_passed_named_args, required_named_args)
+        )
+        if 0 < len(not_to_be_passed_named_args):
+            raise SchemaError(
+                f"Unsupported argument names detected: {', '.join(not_to_be_passed_named_args)} in function below\n{inspect.getsource(extractor_fn)}"
+            )
+
+
+@typechecked
+def accepts_argument_count(fn: Callable, count: int) -> bool:
+    signature = inspect.signature(fn)
+    parameters = [p for p in signature.parameters.values()]
+    accepts_overflow_arguments = any(p.kind == p.VAR_POSITIONAL for p in parameters)
+    acceptable_positional_parameters = list(
+        filter(
+            lambda p: p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD}, parameters
+        )
+    )
+    required_positional_parameters = list(
+        filter(lambda p: p.default == p.empty, acceptable_positional_parameters)
+    )
+
+    if len(required_positional_parameters) <= count:
+        if accepts_overflow_arguments:
+            return True
+        elif count <= len(acceptable_positional_parameters):
+            return True
+        else:
+            return False
+    else:
+        return False
+
+
+@typechecked
+def accepts_all_kwargs(fn: Callable) -> bool:
+    signature = inspect.signature(fn)
+    return any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values())
+
+
+@typechecked
+def get_all_required_named_args(fn: Callable) -> List[str]:
+    parameters = get_named_parameter_objs(fn)
+    parameters = list(filter(lambda p: p.default == p.empty, parameters))
+    parameter_names = [p.name for p in parameters]
+    return parameter_names
+
+
+@typechecked
+def get_all_acceptable_named_args(fn: Callable) -> List[str]:
+    parameters = get_named_parameter_objs(fn)
+    parameter_names = [p.name for p in parameters]
+    return parameter_names
+
+
+@typechecked
+def get_named_parameter_objs(fn: Callable) -> List[inspect.Parameter]:
+    signature = inspect.signature(fn)
+    return list(
+        filter(
+            lambda p: p.kind in {p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD},
+            signature.parameters.values(),
+        )
+    )

@@ -5,18 +5,29 @@ from pathlib import Path
 from .utils import fake_spider
 
 
-def test_drop_dupe_media_files_piplines(tmpdir: Any) -> None:
+def test_drop_unneeded_for_download_media_files_piplines(tmpdir: Any) -> None:
     tmpdir = Path(tmpdir)
-    pipeline = DropDupeMediaFilesPipeline()
+    pipeline = DropUnneededForDownloadMediaFilesPipeline()
 
     item = MediaFiles(
-        file_urls=["http://example.com/aaa.txt", "http://example.com/bbb.txt"],
-        file_paths=[str(tmpdir.joinpath("aaa.txt")), str(tmpdir.joinpath("bbb.txt"))],
+        file_urls=[
+            "http://example.com/aaa.txt",
+            "http://example.com/bbb.txt",
+            "http://example.com/ccc.txt",
+        ],
+        file_paths=[
+            str(tmpdir.joinpath("aaa.txt")),
+            str(tmpdir.joinpath("bbb.txt")),
+            str(tmpdir.joinpath("ccc.txt")),
+        ],
+        file_contents=[None, None, b"foo bar baz"],
     )
 
     tmpdir.joinpath("aaa.txt").touch()
 
     spider = fake_spider(tmpdir)
+
+    assert not tmpdir.joinpath("ccc.txt").exists()
 
     item = pipeline.process_item(item, spider)
     assert len(item["file_urls"]) == 1
@@ -24,10 +35,12 @@ def test_drop_dupe_media_files_piplines(tmpdir: Any) -> None:
     assert len(item["file_paths"]) == 1
     assert item["file_paths"][0] == str(tmpdir.joinpath("bbb.txt"))
 
+    assert tmpdir.joinpath("ccc.txt").exists()
 
-def test_save_media_files_pipeline(tmpdir: Any) -> None:
+
+def test_save_downloaded_media_files_pipeline(tmpdir: Any) -> None:
     tmpdir = Path(tmpdir)
-    pipeline = SaveMediaFilesPipeline()
+    pipeline = SaveDownloadedMediaFilesPipeline()
 
     spider = fake_spider(tmpdir)
 
