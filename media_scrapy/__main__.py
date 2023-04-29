@@ -15,9 +15,11 @@ from typeguard import typechecked
 @typechecked
 class Args(Tap):
     site_config: Path
+    verbose: bool = False
 
     def configure(self) -> None:
         self.add_argument("-c", "--site_config")
+        self.add_argument("-v", "--verbose", action="store_true")
 
 
 @typechecked
@@ -25,6 +27,12 @@ def main(args: Args) -> None:
     configure_logging()
     settings = Settings()
     settings.setmodule(setting_definitions, priority="project")
+    settings.setdict(
+        {
+            "LOG_LEVEL": "DEBUG" if args.verbose else "INFO",
+        },
+        priority="cmdline",
+    )
     crawler = CrawlerRunner(settings)
     deferred = crawler.crawl(MainSpider, siteconf=args.site_config)
 
