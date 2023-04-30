@@ -111,6 +111,22 @@ def test_site_config_init_error() -> None:
     with pytest.raises(SchemaError):
         SiteConfig(ConfDef4())
 
+    class ConfDef5:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": "http://example\.com/",
+                "content": "xpat_error((([[[",
+            },
+            {
+                "url": "http://example\.com/foo",
+            },
+        ]
+
+    with pytest.raises(SchemaError):
+        SiteConfig(ConfDef5())
+
 
 def test_get_url_infos_with_file_content() -> None:
     class ConfDef:

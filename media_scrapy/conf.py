@@ -30,6 +30,7 @@ from parsel import Selector, SelectorList, xpathfuncs
 from schema import Schema, Or, SchemaError, Optional as SchemaOptional
 from typeguard import typechecked, check_type, TypeCheckError
 import personal_xpath_functions
+from lxml.etree import XPath, XPathSyntaxError
 
 
 @typechecked
@@ -748,6 +749,16 @@ class RegexSchema(SchemaBase[re.Pattern]):
         return regex
 
 
+@typechecked
+class XPathSchema(SchemaBase[str]):
+    def create_if_available(self, definition: Any) -> Optional[str]:
+        try:
+            xpath = XPath(definition)
+        except XPathSyntaxError as err:
+            raise SchemaError(error_message("Invalid xpath", definition)) from err
+        return xpath.path
+
+
 ReturnTV = TypeVar("ReturnTV")
 
 
@@ -846,11 +857,13 @@ class UrlConverterSchema(CallableComponentSchemaBase[str]):
 
 @typechecked
 class ContentNodeExtractorSchema(CallableComponentSchemaBase[SelectorList]):
+    xpath_schema = XPathSchema()
+
     def create_if_available(
         self, definition: Any
     ) -> Optional[CallableComponent[SelectorList]]:
         if isinstance(definition, str):
-            xpath = definition
+            xpath = self.xpath_schema.validate(definition)
 
             def content_node_extractor(res: Response) -> SelectorList:
                 return cast(SelectorList, res.xpath(xpath))
@@ -906,11 +919,13 @@ class FilePathExtractorSchema(CallableComponentSchemaBase[str]):
 
 @typechecked
 class ContentExtractorSchema(CallableComponentSchemaBase[Union[str, bytes]]):
+    xpath_schema = XPathSchema()
+
     def create_if_available(
         self, definition: Any
     ) -> Optional[CallableComponent[Union[str, bytes]]]:
         if isinstance(definition, str):
-            xpath = definition
+            xpath = self.xpath_schema.validate(definition)
 
             def content_extractor(content_node: SelectorList) -> str:
                 content = content_node.xpath(xpath).getall()
@@ -935,6 +950,8 @@ class ContentExtractorSchema(CallableComponentSchemaBase[Union[str, bytes]]):
 
 @typechecked
 class AssertionMatcherSchema(CallableComponentSchemaBase[bool]):
+    xpath_schema = XPathSchema()
+
     def create_if_available(self, definition: Any) -> Optional[CallableComponent[bool]]:
         if isinstance(definition, list):
             sub_matchers = []
@@ -966,7 +983,7 @@ class AssertionMatcherSchema(CallableComponentSchemaBase[bool]):
             )
 
         if isinstance(definition, str):
-            xpath = definition
+            xpath = self.xpath_schema.validate(definition)
 
             def xpath_assertion_matcher(content_node: SelectorList) -> bool:
                 if content_node.xpath(f"boolean({xpath})").get() == "0":
