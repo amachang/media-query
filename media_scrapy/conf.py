@@ -306,6 +306,7 @@ class ParseUrlInfo(UrlInfo):
 class StructureNode:
     children: List["StructureNode"]
     parent: Optional["StructureNode"]
+    source_obj: Any
     url_matcher: Optional[Callable[[str], Union[bool, re.Match]]]
     url_converter: Optional[Callable[..., str]]
     content_node_extractor: Optional[Callable[..., SelectorList]]
@@ -317,6 +318,7 @@ class StructureNode:
 
     def __init__(
         self,
+        source_obj: Any,
         url_matcher: Optional[Callable[[str], Union[bool, re.Match]]] = None,
         url_converter: Optional[Callable[..., str]] = None,
         content_node_extractor: Optional[Callable[..., SelectorList]] = None,
@@ -328,6 +330,7 @@ class StructureNode:
     ) -> None:
         self.children = []
         self.parent = None
+        self.source_obj = source_obj
         self.url_matcher = url_matcher
         self.url_converter = url_converter
         self.content_node_extractor = content_node_extractor
@@ -588,7 +591,7 @@ def get_links(res: Response, content_node: SelectorList) -> List[Tuple[Selector,
 def parse_structure_list(
     structure_node_def_list: List[Union[List, Dict, str]]
 ) -> StructureNode:
-    root_node = StructureNode(is_root=True)
+    root_node = StructureNode(source_obj=None, is_root=True)
     no_more_node = False
 
     parent_node = root_node
@@ -625,7 +628,7 @@ def parse_structure_list(
 def parse_structure(structure_node_def: Union[Dict, str]) -> StructureNode:
     if isinstance(structure_node_def, str):
         url_matcher = UrlMatcherSchema().validate(structure_node_def)
-        return StructureNode(url_matcher=url_matcher)
+        return StructureNode(source_obj=structure_node_def, url_matcher=url_matcher)
     else:
         structure_node_parsed = Schema(
             {
@@ -640,6 +643,7 @@ def parse_structure(structure_node_def: Union[Dict, str]) -> StructureNode:
         ).validate(structure_node_def)
 
         return StructureNode(
+            source_obj=structure_node_def,
             url_matcher=structure_node_parsed["url"],
             url_converter=structure_node_parsed["as_url"],
             content_node_extractor=structure_node_parsed["content"],
