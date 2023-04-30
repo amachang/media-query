@@ -14,7 +14,9 @@ from typing import (
     Set,
     TypeVar,
     Tuple,
+    Generic,
 )
+from textwrap import indent
 import re
 import html
 import os
@@ -122,7 +124,7 @@ class SiteConfig:
             parent_file_path = path.join(parent_file_path, parent_file_path_component)
 
         if parent_structure_node.is_leaf():
-            if parent_structure_node.needs_request_for_file_content():
+            if parent_structure_node.needs_response_for_file_content():
                 file_content = parent_structure_node.extract_file_content(
                     url=res.url,
                     link_el=parent_link_el,
@@ -233,12 +235,12 @@ class SiteConfig:
                         converted_url = structure_node.convert_url(
                             url=url, link_el=link_el, url_match=url_match
                         )
-                        needs_request_for_file = (
-                            structure_node.needs_request_for_file_path()
-                            or structure_node.needs_request_for_file_content()
+                        needs_response_for_file = (
+                            structure_node.needs_response_for_file_path()
+                            or structure_node.needs_response_for_file_content()
                         )
 
-                        if structure_node.is_leaf() and not needs_request_for_file:
+                        if structure_node.is_leaf() and not needs_response_for_file:
                             if structure_node.can_get_file_content_before_request():
                                 file_content = structure_node.extract_file_content_without_response(
                                     url=converted_url,
@@ -267,7 +269,16 @@ class SiteConfig:
                         url_infos.append(url_info)
 
         if not forwardable_structure_node_found and parent_structure_node.is_root:
-            raise MediaScrapyError(f"Start url doesn't much first url definition")
+            url_matcher_sources = [
+                f"{index}: <no url matcher in definition>\n"
+                if node.url_matcher is None
+                else f"{index}: {node.url_matcher.get_source_string()}"
+                for index, node in enumerate(parent_structure_node.children)
+            ]
+            url_matcher_sources_text = "".join(url_matcher_sources)
+            raise MediaScrapyError(
+                f"Start url doesn't much any url matcher: \n{indent(url_matcher_sources_text, '    ')}"
+            )
 
         return url_infos
 
@@ -302,29 +313,85 @@ class ParseUrlInfo(UrlInfo):
     url_match: Optional[re.Match]
 
 
+U = TypeVar("U")
+
+
+@typechecked
+class CallableSiteConfigComponent(Generic[U]):
+    source_obj: Any
+    fn: Callable[..., Optional[U]]
+    accepts_all_named_args: bool
+    acceptable_named_args: List[str]
+    needs_response: bool
+
+    def __init__(
+        self,
+        source_obj: Any,
+        fn: Callable[..., Optional[U]],
+        can_accept_response: bool,
+    ) -> None:
+        self.source_obj = source_obj
+        self.fn = fn
+        self.accepts_all_named_args = accepts_all_named_args(self.fn)
+        self.acceptable_named_args = get_all_acceptable_named_args(self.fn)
+        self.needs_response = can_accept_response and any(
+            arg in self.acceptable_named_args for arg in ["res", "content_node"]
+        )
+
+    def __call__(self, *args: Any, **kwargs: Any) -> U:
+        result: Optional[U]
+        if self.accepts_all_named_args:
+            result = self.fn(**kwargs)
+        else:
+            acceptable_kwargs = {
+                k: v for k, v in kwargs.items() if k in self.acceptable_named_args
+            }
+            result = self.fn(**acceptable_kwargs)
+        if result is None:
+            raise MediaScrapyError(
+                f"Return None value from site config component below: \n{indent(self.get_source_string(), '    ')}\n"
+            )
+        return result
+
+    def get_source_string(self) -> str:
+        try:
+            source_string = f"{inspect.getsource(self.source_obj)}"
+        except:
+            source_string = f"{self.source_obj}\n"
+
+        assert re.search(r"\n$", source_string)
+        return source_string
+
+
 @typechecked
 class StructureNode:
     children: List["StructureNode"]
     parent: Optional["StructureNode"]
     source_obj: Any
-    url_matcher: Optional[Callable[[str], Union[bool, re.Match]]]
-    url_converter: Optional[Callable[..., str]]
-    content_node_extractor: Optional[Callable[..., SelectorList]]
-    file_content_extractor: Optional[Callable[..., Union[str, bytes]]]
-    file_path_extractor: Optional[Callable[..., str]]
-    assertion_matcher: Optional[Callable[..., None]]
+    url_matcher: Optional[CallableSiteConfigComponent[Union[bool, re.Match]]]
+    url_converter: Optional[CallableSiteConfigComponent[str]]
+    content_node_extractor: Optional[CallableSiteConfigComponent[SelectorList]]
+    file_content_extractor: Optional[CallableSiteConfigComponent[Union[str, bytes]]]
+    file_path_extractor: Optional[CallableSiteConfigComponent[str]]
+    assertion_matcher: Optional[CallableSiteConfigComponent[None]]
     paging: bool
     is_root: bool
 
     def __init__(
         self,
         source_obj: Any,
-        url_matcher: Optional[Callable[[str], Union[bool, re.Match]]] = None,
-        url_converter: Optional[Callable[..., str]] = None,
-        content_node_extractor: Optional[Callable[..., SelectorList]] = None,
-        file_content_extractor: Optional[Callable[..., Union[str, bytes]]] = None,
-        file_path_extractor: Optional[Callable[..., str]] = None,
-        assertion_matcher: Optional[Callable[..., None]] = None,
+        url_matcher: Optional[
+            CallableSiteConfigComponent[Union[bool, re.Match]]
+        ] = None,
+        url_converter: Optional[CallableSiteConfigComponent[str]] = None,
+        content_node_extractor: Optional[
+            CallableSiteConfigComponent[SelectorList]
+        ] = None,
+        file_content_extractor: Optional[
+            CallableSiteConfigComponent[Union[str, bytes]]
+        ] = None,
+        file_path_extractor: Optional[CallableSiteConfigComponent[str]] = None,
+        assertion_matcher: Optional[CallableSiteConfigComponent[None]] = None,
         paging: bool = False,
         is_root: bool = False,
     ) -> None:
@@ -346,29 +413,29 @@ class StructureNode:
     def is_leaf(self) -> bool:
         return len(self.children) == 0
 
-    def needs_request_for_file_path(self) -> bool:
+    def needs_response_for_file_path(self) -> bool:
         if self.file_path_extractor is None:
             return False
         else:
-            return needs_request_for_function(self.file_path_extractor)
+            return self.file_path_extractor.needs_response
 
     def can_get_file_path_before_request(self) -> bool:
         if self.file_path_extractor is None:
             return False
         else:
-            return not needs_request_for_function(self.file_path_extractor)
+            return not self.file_path_extractor.needs_response
 
-    def needs_request_for_file_content(self) -> bool:
+    def needs_response_for_file_content(self) -> bool:
         if self.file_content_extractor is None:
             return False
         else:
-            return needs_request_for_function(self.file_content_extractor)
+            return self.file_content_extractor.needs_response
 
     def can_get_file_content_before_request(self) -> bool:
         if self.file_content_extractor is None:
             return False
         else:
-            return not needs_request_for_function(self.file_content_extractor)
+            return not self.file_content_extractor.needs_response
 
     def add(self, node: "StructureNode") -> None:
         assert isinstance(node, StructureNode)
@@ -396,7 +463,7 @@ class StructureNode:
         if self.url_matcher is None:
             return False, None
         else:
-            matched = self.url_matcher(url)
+            matched = self.url_matcher(url=url)
             if isinstance(matched, bool):
                 return matched, None
             else:
@@ -410,9 +477,10 @@ class StructureNode:
         url_match: Optional[re.Match],
     ) -> str:
         if self.url_converter is not None:
-            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
-            result = call_only_with_acceptable_kwargs(self.url_converter, kwargs)
-            return result
+            converted_url = self.url_converter(
+                url=url, link_el=link_el, url_match=url_match
+            )
+            return converted_url
         else:
             return url
 
@@ -424,16 +492,9 @@ class StructureNode:
         res: Response,
     ) -> SelectorList:
         if self.content_node_extractor:
-            kwargs = {
-                "url": url,
-                "link_el": link_el,
-                "url_match": url_match,
-                "res": res,
-            }
-            result = call_only_with_acceptable_kwargs(
-                self.content_node_extractor, kwargs
+            return self.content_node_extractor(
+                url=url, link_el=link_el, url_match=url_match, res=res
             )
-            return result
         else:
             return SelectorList([res.selector])
 
@@ -445,10 +506,11 @@ class StructureNode:
     ) -> Optional[str]:
         if (
             self.file_path_extractor is not None
-            and not self.needs_request_for_file_path()
+            and not self.needs_response_for_file_path()
         ):
-            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
-            result = call_only_with_acceptable_kwargs(self.file_path_extractor, kwargs)
+            result = self.file_path_extractor(
+                url=url, link_el=link_el, url_match=url_match
+            )
             assert isinstance(result, str)
             return result
         else:
@@ -462,16 +524,15 @@ class StructureNode:
         link_el: Selector,
         url_match: Optional[re.Match],
     ) -> Optional[str]:
-        if self.needs_request_for_file_path():
+        if self.needs_response_for_file_path():
             assert self.file_path_extractor is not None
-            kwargs = {
-                "url": url,
-                "res": res,
-                "content_node": content_node,
-                "link_el": link_el,
-                "url_match": url_match,
-            }
-            result = call_only_with_acceptable_kwargs(self.file_path_extractor, kwargs)
+            result = self.file_path_extractor(
+                url=url,
+                res=res,
+                content_node=content_node,
+                link_el=link_el,
+                url_match=url_match,
+            )
             assert isinstance(result, str)
             return result
         else:
@@ -485,9 +546,7 @@ class StructureNode:
         link_el: Selector,
         url_match: Optional[re.Match],
     ) -> bytes:
-        assert (
-            self.file_content_extractor is not None
-        )  # call needs_request_for_file_content in advace
+        assert self.file_content_extractor is not None
         return self.extract_file_content_impl(
             {
                 "url": url,
@@ -504,9 +563,7 @@ class StructureNode:
         link_el: Selector,
         url_match: Optional[re.Match],
     ) -> bytes:
-        assert (
-            self.file_content_extractor is not None
-        )  # call can_get_file_content_before_request in advace
+        assert self.file_content_extractor is not None
         return self.extract_file_content_impl(
             {
                 "url": url,
@@ -517,9 +574,7 @@ class StructureNode:
 
     def extract_file_content_impl(self, kwargs: Dict[str, Any]) -> bytes:
         assert self.file_content_extractor is not None
-        file_content = call_only_with_acceptable_kwargs(
-            self.file_content_extractor, kwargs
-        )
+        file_content = self.file_content_extractor(**kwargs)
         if isinstance(file_content, str):
             return file_content.encode("utf-8")
         else:
@@ -542,12 +597,18 @@ class StructureNode:
                 "link_el": link_el,
                 "url_match": url_match,
             }
-            call_only_with_acceptable_kwargs(self.assertion_matcher, kwargs)
+            self.assertion_matcher(
+                url=url,
+                res=res,
+                content_node=content_node,
+                link_el=link_el,
+                url_match=url_match,
+            )
 
     def check(self) -> None:
         if not self.is_leaf() and self.file_content_extractor is not None:
             raise MediaScrapyError(
-                f"Leaf definition can only have file_content directive"
+                f"file_content can be only in last definition: \n{indent(self.file_content_extractor.get_source_string(), '    ')}"
             )
 
         for child_node in self.children:
@@ -592,13 +653,13 @@ def parse_structure_list(
     structure_node_def_list: List[Union[List, Dict, str]]
 ) -> StructureNode:
     root_node = StructureNode(source_obj=None, is_root=True)
-    no_more_node = False
+    after_branch_node = False
 
     parent_node = root_node
     for structure_node_def in structure_node_def_list:
-        if no_more_node:
+        if after_branch_node:
             raise MediaScrapyError(
-                f"Unable to add new structure here: {structure_node_def}"
+                f"Once branched structure nodes cannot be merged in a single node: \n{indent(str(structure_node_def), '    ')}"
             )
 
         if isinstance(structure_node_def, dict) or isinstance(structure_node_def, str):
@@ -613,10 +674,10 @@ def parse_structure_list(
                     assert not sub_node.is_root
                     sub_root_node.delete(sub_node)
                     parent_node.add(sub_node)
-            no_more_node = True
+            after_branch_node = True
         else:
             raise MediaScrapyError(
-                f"Invalid structure definition: {structure_node_def}"
+                f"Invalid structure definition: \n{indent(str(structure_node_def), '    ')}"
             )
 
     root_node.check()
@@ -677,9 +738,9 @@ class UrlMatcherSchema(Schema):
         self,
         url_matcher_def: Union[
             str,
-            Callable[[str], Union[bool, re.Match, None]],
+            Callable[..., Union[bool, re.Match, None]],
         ],
-    ) -> Callable[[str], Union[bool, re.Match]]:
+    ) -> CallableSiteConfigComponent[Union[bool, re.Match]]:
         if isinstance(url_matcher_def, str) or isinstance(url_matcher_def, re.Pattern):
             regex = self.regex_schema.validate(url_matcher_def)
 
@@ -690,10 +751,12 @@ class UrlMatcherSchema(Schema):
                 else:
                     return url_match
 
-            return url_matcher
+            return CallableSiteConfigComponent(
+                source_obj=url_matcher_def, fn=url_matcher, can_accept_response=False
+            )
 
         elif callable(url_matcher_def):
-            assert accepts_argument_count(url_matcher_def, 1)
+            check_supports_named_args_for_function(url_matcher_def, {"url"})
             url_matcher_impl = url_matcher_def
 
             def url_matcher(url: str) -> Union[bool, re.Match]:
@@ -703,7 +766,9 @@ class UrlMatcherSchema(Schema):
                 else:
                     return result
 
-            return url_matcher
+            return CallableSiteConfigComponent(
+                source_obj=url_matcher_def, fn=url_matcher, can_accept_response=False
+            )
 
         else:
             raise SchemaError(f"Unknown url matcher type: {url_matcher_def}")
@@ -716,7 +781,7 @@ class UrlConverterSchema(Schema):
 
     def validate(
         self, definition: Union[str, Callable[..., Optional[str]]]
-    ) -> Callable[..., str]:
+    ) -> CallableSiteConfigComponent[str]:
         if isinstance(definition, str):
             match_expansion_template = definition
 
@@ -726,7 +791,9 @@ class UrlConverterSchema(Schema):
                 else:
                     return url_match.expand(match_expansion_template)
 
-            return url_converter
+            return CallableSiteConfigComponent(
+                source_obj=definition, fn=url_converter, can_accept_response=False
+            )
 
         assert callable(definition)
 
@@ -734,7 +801,9 @@ class UrlConverterSchema(Schema):
             definition, {"url", "link_el", "url_match"}
         )
 
-        return wrap_function_return_non_optional(definition, accepts_response=False)
+        return CallableSiteConfigComponent(
+            source_obj=definition, fn=definition, can_accept_response=False
+        )
 
 
 @typechecked
@@ -744,14 +813,18 @@ class ContentNodeExtractorSchema(Schema):
 
     def validate(
         self, definition: Union[str, Callable[..., SelectorList]]
-    ) -> Callable[..., SelectorList]:
+    ) -> CallableSiteConfigComponent[SelectorList]:
         if isinstance(definition, str):
             xpath = definition
 
             def content_node_extractor(res: Response) -> SelectorList:
                 return cast(SelectorList, res.xpath(xpath))
 
-            return content_node_extractor
+            return CallableSiteConfigComponent(
+                source_obj=definition,
+                fn=content_node_extractor,
+                can_accept_response=True,
+            )
 
         assert callable(definition)
 
@@ -759,7 +832,9 @@ class ContentNodeExtractorSchema(Schema):
             definition, {"url", "link_el", "url_match", "res"}
         )
 
-        return definition
+        return CallableSiteConfigComponent(
+            source_obj=definition, fn=definition, can_accept_response=True
+        )
 
 
 @typechecked
@@ -769,7 +844,7 @@ class FilePathExtractorSchema(Schema):
 
     def validate(
         self, definition: Union[str, Callable[..., Optional[str]]]
-    ) -> Callable[..., str]:
+    ) -> CallableSiteConfigComponent[str]:
         if isinstance(definition, str):
             match_expansion_template = definition
 
@@ -779,7 +854,9 @@ class FilePathExtractorSchema(Schema):
                 else:
                     return url_match.expand(match_expansion_template)
 
-            return file_path_extractor
+            return CallableSiteConfigComponent(
+                source_obj=definition, fn=file_path_extractor, can_accept_response=True
+            )
 
         assert callable(definition)
 
@@ -787,7 +864,9 @@ class FilePathExtractorSchema(Schema):
             definition, {"url", "link_el", "url_match", "res", "content_node"}
         )
 
-        return wrap_function_return_non_optional(definition, accepts_response=True)
+        return CallableSiteConfigComponent(
+            source_obj=definition, fn=definition, can_accept_response=True
+        )
 
 
 @typechecked
@@ -797,7 +876,7 @@ class ContentExtractorSchema(Schema):
 
     def validate(
         self, definition: Union[str, Callable[..., Union[str, bytes, None]]]
-    ) -> Callable[..., Union[str, bytes]]:
+    ) -> CallableSiteConfigComponent[Union[str, bytes]]:
         if isinstance(definition, str):
             xpath = definition
 
@@ -805,7 +884,9 @@ class ContentExtractorSchema(Schema):
                 content = content_node.xpath(xpath).getall()
                 return json.dumps(content)
 
-            return content_extractor
+            return CallableSiteConfigComponent(
+                source_obj=definition, fn=content_extractor, can_accept_response=True
+            )
 
         assert callable(definition)
 
@@ -813,7 +894,9 @@ class ContentExtractorSchema(Schema):
             definition, {"url", "link_el", "url_match", "res", "content_node"}
         )
 
-        return wrap_function_return_non_optional(definition, accepts_response=True)
+        return CallableSiteConfigComponent(
+            source_obj=definition, fn=definition, can_accept_response=True
+        )
 
 
 @typechecked
@@ -823,7 +906,7 @@ class AssertionMatcherSchema(Schema):
 
     def validate(
         self, assertion_matcher_def: Union[str, Callable[..., bool], List]
-    ) -> Callable[..., None]:
+    ) -> CallableSiteConfigComponent[bool]:
         if isinstance(assertion_matcher_def, list):
             sub_matchers = []
             for sub_assertion_matcher_def in assertion_matcher_def:
@@ -836,27 +919,36 @@ class AssertionMatcherSchema(Schema):
                 url_match: re.Match,
                 res: Response,
                 content_node: SelectorList,
-            ) -> None:
-                kwargs = {
-                    "url": url,
-                    "link_el": link_el,
-                    "url_match": url_match,
-                    "res": res,
-                    "content_node": content_node,
-                }
+            ) -> bool:
                 for sub_matcher in sub_matchers:
-                    call_only_with_acceptable_kwargs(sub_matcher, kwargs)
+                    sub_matcher(
+                        url=url,
+                        link_el=link_el,
+                        url_match=url_match,
+                        res=res,
+                        content_node=content_node,
+                    )
+                return True
 
-            return multiple_assertion_matcher
+            return CallableSiteConfigComponent(
+                source_obj=assertion_matcher_def,
+                fn=multiple_assertion_matcher,
+                can_accept_response=True,
+            )
 
         if isinstance(assertion_matcher_def, str):
             xpath = assertion_matcher_def
 
-            def xpath_assertion_matcher(content_node: SelectorList) -> None:
+            def xpath_assertion_matcher(content_node: SelectorList) -> bool:
                 if content_node.xpath(f"boolean({xpath})").get() == "0":
                     raise AssertionError(f"AssertionMatcher failed xpath: {xpath}")
+                return True
 
-            return xpath_assertion_matcher
+            return CallableSiteConfigComponent(
+                source_obj=xpath,
+                fn=xpath_assertion_matcher,
+                can_accept_response=True,
+            )
 
         assert callable(assertion_matcher_def)
 
@@ -866,6 +958,11 @@ class AssertionMatcherSchema(Schema):
         )
 
         assertion_matcher_impl = assertion_matcher_def
+        assertion_matcher_sub_component = CallableSiteConfigComponent(
+            source_obj=assertion_matcher_impl,
+            fn=assertion_matcher_impl,
+            can_accept_response=True,
+        )
 
         def assertion_matcher(
             url: str,
@@ -873,138 +970,47 @@ class AssertionMatcherSchema(Schema):
             url_match: re.Match,
             res: Response,
             content_node: SelectorList,
-        ) -> None:
-            kwargs = {
-                "url": url,
-                "link_el": link_el,
-                "url_match": url_match,
-                "res": res,
-                "content_node": content_node,
-            }
-            if not call_only_with_acceptable_kwargs(assertion_matcher_impl, kwargs):
+        ) -> bool:
+            if not assertion_matcher_sub_component(
+                url=url,
+                link_el=link_el,
+                url_match=url_match,
+                res=res,
+                content_node=content_node,
+            ):
                 matcher_source = f"\n{inspect.getsource(assertion_matcher_impl)}\n"
                 raise AssertionError(
                     f"AssertionMatcher failed in function: {matcher_source}"
                 )
+            return True
 
-        return assertion_matcher
+        return CallableSiteConfigComponent(
+            source_obj=assertion_matcher_impl,
+            fn=assertion_matcher,
+            can_accept_response=True,
+        )
 
 
 T = TypeVar("T")
 
 
 @typechecked
-def wrap_function_return_non_optional(
-    fn: Callable[..., Optional[T]], accepts_response: bool
-) -> Callable[..., T]:
-    def raise_if_none(result: Optional[T]) -> T:
-        if result is not None:
-            return result
-        else:
-            fn_source = f"\n{inspect.getsource(fn)}\n"
-            raise MediaScrapyError(f"Return None value from function: {fn_source}")
-
-    if accepts_response and needs_request_for_function(fn):
-
-        def non_optional_response_function_wrapper(
-            url: str,
-            link_el: Selector,
-            url_match: re.Match,
-            res: Response,
-            content_node: SelectorList,
-        ) -> T:
-            kwargs = {
-                "url": url,
-                "link_el": link_el,
-                "url_match": url_match,
-                "res": res,
-                "content_node": content_node,
-            }
-            return raise_if_none(call_only_with_acceptable_kwargs(fn, kwargs))
-
-        return non_optional_response_function_wrapper
-    else:
-
-        def non_optional_function_wrapper(
-            url: str, link_el: Selector, url_match: re.Match
-        ) -> T:
-            kwargs = {"url": url, "link_el": link_el, "url_match": url_match}
-            return raise_if_none(call_only_with_acceptable_kwargs(fn, kwargs))
-
-        return non_optional_function_wrapper
-
-
-@typechecked
-def needs_request_for_function(fn: Callable[..., Any]) -> bool:
-    acceptable_named_args = set(get_all_acceptable_named_args(fn))
-    return any(arg in acceptable_named_args for arg in ["res", "content_node"])
-
-
-@typechecked
-def call_only_with_acceptable_kwargs(fn: Callable[..., T], kwargs: Dict[str, Any]) -> T:
-    if accepts_all_kwargs(fn):
-        return fn(**kwargs)
-    else:
-        acceptable_named_args = get_all_acceptable_named_args(fn)
-        acceptable_kwargs = {
-            k: v for k, v in kwargs.items() if k in acceptable_named_args
-        }
-        """
-        none_value_arg_keys = [
-            arg_key
-            for arg_key, arg_value in acceptable_kwargs.items()
-            if arg_value is None
-        ]
-        if 0 < len(none_value_arg_keys):
-            raise MediaScrapyError(
-                f"Function required argument is None: {', '.join(none_value_arg_keys)}"
-            )
-        """
-        return fn(**acceptable_kwargs)
-
-
-@typechecked
 def check_supports_named_args_for_function(
     extractor_fn: Callable, to_be_passed_named_args: Set[str]
 ) -> None:
-    if not accepts_all_kwargs(extractor_fn):
+    if not accepts_all_named_args(extractor_fn):
         required_named_args = get_all_required_named_args(extractor_fn)
         not_to_be_passed_named_args = list(
             filter(lambda arg: arg not in to_be_passed_named_args, required_named_args)
         )
         if 0 < len(not_to_be_passed_named_args):
             raise SchemaError(
-                f"Unsupported argument names detected: {', '.join(not_to_be_passed_named_args)} in function below\n{inspect.getsource(extractor_fn)}"
+                f"Unsupported argument names detected in function below: {', '.join(not_to_be_passed_named_args)}\n{indent(inspect.getsource(extractor_fn), '    ')}"
             )
 
 
 @typechecked
-def accepts_argument_count(fn: Callable, count: int) -> bool:
-    signature = inspect.signature(fn)
-    parameters = [p for p in signature.parameters.values()]
-    accepts_overflow_arguments = any(p.kind == p.VAR_POSITIONAL for p in parameters)
-    acceptable_positional_parameters = list(
-        filter(
-            lambda p: p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD}, parameters
-        )
-    )
-    required_positional_parameters = list(
-        filter(lambda p: p.default == p.empty, acceptable_positional_parameters)
-    )
-
-    if len(required_positional_parameters) <= count:
-        if accepts_overflow_arguments:
-            return True
-        elif count <= len(acceptable_positional_parameters):
-            return True
-        else:
-            return False
-    else:
-        return False
-
-
-@typechecked
-def accepts_all_kwargs(fn: Callable) -> bool:
+def accepts_all_named_args(fn: Callable) -> bool:
     signature = inspect.signature(fn)
     return any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values())
 

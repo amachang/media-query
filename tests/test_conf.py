@@ -475,6 +475,8 @@ def test_get_url_infos_multiple_root() -> None:
         "./bar/bar.txt",
     ]
 
+
+def test_get_url_infos_start_url_not_match_with_any_url_matcher() -> None:
     class ConfDef2:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -945,21 +947,11 @@ def test_get_links() -> None:
     ]
 
 
-def test_accepts_argument_count() -> None:
-    assert not accepts_argument_count(lambda a: a, 0)
-    assert accepts_argument_count(lambda a: a, 1)
-    assert not accepts_argument_count(lambda a: a, 2)
-
-    assert accepts_argument_count(lambda *args: (*args,), 1)
-    assert accepts_argument_count(lambda a, *args: (a, *args), 1)
-    assert not accepts_argument_count(lambda a, b, *args: (a, b, *args), 1)
-
-
-def test_accepts_all_kwargs() -> None:
-    assert not accepts_all_kwargs(lambda a: a)
-    assert not accepts_all_kwargs(lambda *args: args)
-    assert not accepts_all_kwargs(lambda a, *, b: a)
-    assert accepts_all_kwargs(lambda **kwargs: kwargs)
+def test_accepts_all_named_args() -> None:
+    assert not accepts_all_named_args(lambda a: a)
+    assert not accepts_all_named_args(lambda *args: args)
+    assert not accepts_all_named_args(lambda a, *, b: a)
+    assert accepts_all_named_args(lambda **kwargs: kwargs)
 
 
 def test_get_all_required_named_args() -> None:
