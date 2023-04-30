@@ -278,7 +278,7 @@ class SiteConfig:
             url_matcher_sources_text = "".join(url_matcher_sources)
             raise MediaScrapyError(
                 error_message(
-                    "Start url doesn't much any url matcher", url_matcher_sources_text
+                    "Start url doesn't much any url matchers", url_matcher_sources_text
                 )
             )
 
@@ -727,7 +727,9 @@ class SchemaBase(Generic[V]):
     def validate(self, definition: Any) -> V:
         result = self.create_if_available(definition)
         if result is None:
-            raise SchemaError(error_message(f"Invalid {self.object_name}", definition))
+            raise SchemaError(
+                error_message(f"Invalid {self.object_name} type", definition)
+            )
         return result
 
     def create_if_available(self, definition: Any) -> Optional[V]:
@@ -1005,10 +1007,10 @@ class AssertionMatcherSchema(CallableComponentSchemaBase[bool]):
                     res=res,
                     content_node=content_node,
                 ):
-                    matcher_source = f"\n{inspect.getsource(assertion_matcher_impl)}\n"
                     raise AssertionError(
                         error_message(
-                            "AssertionMatcher failed in function below", matcher_source
+                            "AssertionMatcher failed in function below",
+                            definition,
                         )
                     )
                 return True
