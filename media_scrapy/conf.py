@@ -28,7 +28,7 @@ from media_scrapy.errors import MediaScrapyError
 from scrapy.http import Response
 from parsel import Selector, SelectorList, xpathfuncs
 from schema import Schema, Or, SchemaError, Optional as SchemaOptional
-from typeguard import typechecked
+from typeguard import typechecked, check_type, TypeCheckError
 import personal_xpath_functions
 
 
@@ -277,7 +277,9 @@ class SiteConfig:
             ]
             url_matcher_sources_text = "".join(url_matcher_sources)
             raise MediaScrapyError(
-                f"Start url doesn't much any url matcher: \n{indent(url_matcher_sources_text, '    ')}"
+                error_message(
+                    "Start url doesn't much any url matcher", url_matcher_sources_text
+                )
             )
 
         return url_infos
@@ -317,7 +319,7 @@ U = TypeVar("U")
 
 
 @typechecked
-class CallableSiteConfigComponent(Generic[U]):
+class CallableComponent(Generic[U]):
     source_obj: Any
     fn: Callable[..., Optional[U]]
     accepts_all_named_args: bool
@@ -349,18 +351,12 @@ class CallableSiteConfigComponent(Generic[U]):
             result = self.fn(**acceptable_kwargs)
         if result is None:
             raise MediaScrapyError(
-                f"Return None value from site config component below: \n{indent(self.get_source_string(), '    ')}\n"
+                error_message("Return none from site config component below", self)
             )
         return result
 
     def get_source_string(self) -> str:
-        try:
-            source_string = f"{inspect.getsource(self.source_obj)}"
-        except:
-            source_string = f"{self.source_obj}\n"
-
-        assert re.search(r"\n$", source_string)
-        return source_string
+        return get_source_string(self.source_obj)
 
 
 @typechecked
@@ -368,30 +364,24 @@ class StructureNode:
     children: List["StructureNode"]
     parent: Optional["StructureNode"]
     source_obj: Any
-    url_matcher: Optional[CallableSiteConfigComponent[Union[bool, re.Match]]]
-    url_converter: Optional[CallableSiteConfigComponent[str]]
-    content_node_extractor: Optional[CallableSiteConfigComponent[SelectorList]]
-    file_content_extractor: Optional[CallableSiteConfigComponent[Union[str, bytes]]]
-    file_path_extractor: Optional[CallableSiteConfigComponent[str]]
-    assertion_matcher: Optional[CallableSiteConfigComponent[None]]
+    url_matcher: Optional[CallableComponent[Union[bool, re.Match]]]
+    url_converter: Optional[CallableComponent[str]]
+    content_node_extractor: Optional[CallableComponent[SelectorList]]
+    file_content_extractor: Optional[CallableComponent[Union[str, bytes]]]
+    file_path_extractor: Optional[CallableComponent[str]]
+    assertion_matcher: Optional[CallableComponent[None]]
     paging: bool
     is_root: bool
 
     def __init__(
         self,
         source_obj: Any,
-        url_matcher: Optional[
-            CallableSiteConfigComponent[Union[bool, re.Match]]
-        ] = None,
-        url_converter: Optional[CallableSiteConfigComponent[str]] = None,
-        content_node_extractor: Optional[
-            CallableSiteConfigComponent[SelectorList]
-        ] = None,
-        file_content_extractor: Optional[
-            CallableSiteConfigComponent[Union[str, bytes]]
-        ] = None,
-        file_path_extractor: Optional[CallableSiteConfigComponent[str]] = None,
-        assertion_matcher: Optional[CallableSiteConfigComponent[None]] = None,
+        url_matcher: Optional[CallableComponent[Union[bool, re.Match]]] = None,
+        url_converter: Optional[CallableComponent[str]] = None,
+        content_node_extractor: Optional[CallableComponent[SelectorList]] = None,
+        file_content_extractor: Optional[CallableComponent[Union[str, bytes]]] = None,
+        file_path_extractor: Optional[CallableComponent[str]] = None,
+        assertion_matcher: Optional[CallableComponent[None]] = None,
         paging: bool = False,
         is_root: bool = False,
     ) -> None:
@@ -608,7 +598,10 @@ class StructureNode:
     def check(self) -> None:
         if not self.is_leaf() and self.file_content_extractor is not None:
             raise MediaScrapyError(
-                f"file_content can be only in last definition: \n{indent(self.file_content_extractor.get_source_string(), '    ')}"
+                error_message(
+                    "file_content can be only in last definition",
+                    self.file_content_extractor,
+                )
             )
 
         for child_node in self.children:
@@ -659,7 +652,10 @@ def parse_structure_list(
     for structure_node_def in structure_node_def_list:
         if after_branch_node:
             raise MediaScrapyError(
-                f"Once branched structure nodes cannot be merged in a single node: \n{indent(str(structure_node_def), '    ')}"
+                error_message(
+                    "Once branched structure nodes cannot be merged in a single node",
+                    structure_node_def,
+                )
             )
 
         if isinstance(structure_node_def, dict) or isinstance(structure_node_def, str):
@@ -677,7 +673,10 @@ def parse_structure_list(
             after_branch_node = True
         else:
             raise MediaScrapyError(
-                f"Invalid structure definition: \n{indent(str(structure_node_def), '    ')}"
+                error_message(
+                    "Invalid structure definition only [str, list, dict] acceptable",
+                    structure_node_def,
+                )
             )
 
     root_node.check()
@@ -715,34 +714,75 @@ def parse_structure(structure_node_def: Union[Dict, str]) -> StructureNode:
         )
 
 
-@typechecked
-class RegexSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
+V = TypeVar("V")
 
-    def validate(self, regex_def: Union[str, re.Pattern]) -> re.Pattern:
+
+@typechecked
+class SchemaBase(Generic[V]):
+    def __init__(self) -> None:
+        class_name_match = re.fullmatch(r"(\w+)Schema", self.__class__.__name__)
+        assert class_name_match is not None
+        self.object_name = class_name_match.expand(r"\g<1>")
+
+    def validate(self, definition: Any) -> V:
+        result = self.create_if_available(definition)
+        if result is None:
+            raise SchemaError(error_message(f"Invalid {self.object_name}", definition))
+        return result
+
+    def create_if_available(self, definition: Any) -> Optional[V]:
+        raise NotImplementedError()
+
+
+@typechecked
+class RegexSchema(SchemaBase[re.Pattern]):
+    def create_if_available(self, definition: Any) -> Optional[re.Pattern]:
         try:
-            regex = re.compile(regex_def)
+            regex = re.compile(definition)
         except re.error as err:
-            raise SchemaError(f"Invalid regular expression: {regex_def}") from err
+            raise SchemaError(
+                error_message("Invalid regular expression", definition)
+            ) from err
         return regex
 
 
-@typechecked
-class UrlMatcherSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.regex_schema = RegexSchema()
+ReturnTV = TypeVar("ReturnTV")
 
-    def validate(
-        self,
-        url_matcher_def: Union[
-            str,
-            Callable[..., Union[bool, re.Match, None]],
-        ],
-    ) -> CallableSiteConfigComponent[Union[bool, re.Match]]:
-        if isinstance(url_matcher_def, str) or isinstance(url_matcher_def, re.Pattern):
-            regex = self.regex_schema.validate(url_matcher_def)
+
+@typechecked
+class CallableComponentSchemaBase(
+    Generic[ReturnTV], SchemaBase[CallableComponent[ReturnTV]]
+):
+    def ensure_callable_signature(
+        self, definition: Any, supported_named_args: Set[str]
+    ) -> Callable[..., Optional[ReturnTV]]:
+        assert callable(definition)
+
+        if not accepts_all_named_args(definition):
+            required_named_args = get_all_required_named_args(definition)
+            not_to_be_passed_named_args = list(
+                filter(lambda arg: arg not in supported_named_args, required_named_args)
+            )
+            if 0 < len(not_to_be_passed_named_args):
+                raise SchemaError(
+                    error_message(
+                        f"Unsupported argument names detected for {self.object_name} ({', '.join(not_to_be_passed_named_args)})",
+                        definition,
+                    )
+                )
+
+        return cast(Callable[..., Optional[ReturnTV]], definition)
+
+
+@typechecked
+class UrlMatcherSchema(CallableComponentSchemaBase[Union[bool, re.Match]]):
+    regex_schema = RegexSchema()
+
+    def create_if_available(
+        self, definition: Any
+    ) -> Optional[CallableComponent[Union[bool, re.Match]]]:
+        if isinstance(definition, str) or isinstance(definition, re.Pattern):
+            regex = self.regex_schema.validate(definition)
 
             def url_matcher(url: str) -> Union[bool, re.Match]:
                 url_match = regex.fullmatch(url)
@@ -751,37 +791,31 @@ class UrlMatcherSchema(Schema):
                 else:
                     return url_match
 
-            return CallableSiteConfigComponent(
-                source_obj=url_matcher_def, fn=url_matcher, can_accept_response=False
+            return CallableComponent(
+                source_obj=definition, fn=url_matcher, can_accept_response=False
             )
 
-        elif callable(url_matcher_def):
-            check_supports_named_args_for_function(url_matcher_def, {"url"})
-            url_matcher_impl = url_matcher_def
+        elif callable(definition):
+            callable_definition = self.ensure_callable_signature(definition, {"url"})
 
             def url_matcher(url: str) -> Union[bool, re.Match]:
-                result = url_matcher_impl(url)
+                result = callable_definition(url)
                 if result is None:
                     return False
                 else:
                     return result
 
-            return CallableSiteConfigComponent(
-                source_obj=url_matcher_def, fn=url_matcher, can_accept_response=False
+            return CallableComponent(
+                source_obj=definition, fn=url_matcher, can_accept_response=False
             )
 
         else:
-            raise SchemaError(f"Unknown url matcher type: {url_matcher_def}")
+            return None
 
 
 @typechecked
-class UrlConverterSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-
-    def validate(
-        self, definition: Union[str, Callable[..., Optional[str]]]
-    ) -> CallableSiteConfigComponent[str]:
+class UrlConverterSchema(CallableComponentSchemaBase[str]):
+    def create_if_available(self, definition: Any) -> Optional[CallableComponent[str]]:
         if isinstance(definition, str):
             match_expansion_template = definition
 
@@ -791,60 +825,57 @@ class UrlConverterSchema(Schema):
                 else:
                     return url_match.expand(match_expansion_template)
 
-            return CallableSiteConfigComponent(
+            return CallableComponent(
                 source_obj=definition, fn=url_converter, can_accept_response=False
             )
 
-        assert callable(definition)
+        elif callable(definition):
+            callable_definition = self.ensure_callable_signature(
+                definition, {"url", "link_el", "url_match"}
+            )
 
-        check_supports_named_args_for_function(
-            definition, {"url", "link_el", "url_match"}
-        )
+            return CallableComponent(
+                source_obj=definition, fn=callable_definition, can_accept_response=False
+            )
 
-        return CallableSiteConfigComponent(
-            source_obj=definition, fn=definition, can_accept_response=False
-        )
+        else:
+            return None
 
 
 @typechecked
-class ContentNodeExtractorSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-
-    def validate(
-        self, definition: Union[str, Callable[..., SelectorList]]
-    ) -> CallableSiteConfigComponent[SelectorList]:
+class ContentNodeExtractorSchema(CallableComponentSchemaBase[SelectorList]):
+    def create_if_available(
+        self, definition: Any
+    ) -> Optional[CallableComponent[SelectorList]]:
         if isinstance(definition, str):
             xpath = definition
 
             def content_node_extractor(res: Response) -> SelectorList:
                 return cast(SelectorList, res.xpath(xpath))
 
-            return CallableSiteConfigComponent(
+            return CallableComponent(
                 source_obj=definition,
                 fn=content_node_extractor,
                 can_accept_response=True,
             )
 
-        assert callable(definition)
+        elif callable(definition):
+            callable_definition = self.ensure_callable_signature(
+                definition,
+                {"url", "link_el", "url_match", "res"},
+            )
 
-        check_supports_named_args_for_function(
-            definition, {"url", "link_el", "url_match", "res"}
-        )
+            return CallableComponent(
+                source_obj=definition, fn=definition, can_accept_response=True
+            )
 
-        return CallableSiteConfigComponent(
-            source_obj=definition, fn=definition, can_accept_response=True
-        )
+        else:
+            return None
 
 
 @typechecked
-class FilePathExtractorSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-
-    def validate(
-        self, definition: Union[str, Callable[..., Optional[str]]]
-    ) -> CallableSiteConfigComponent[str]:
+class FilePathExtractorSchema(CallableComponentSchemaBase[str]):
+    def create_if_available(self, definition: Any) -> Optional[CallableComponent[str]]:
         if isinstance(definition, str):
             match_expansion_template = definition
 
@@ -854,29 +885,28 @@ class FilePathExtractorSchema(Schema):
                 else:
                     return url_match.expand(match_expansion_template)
 
-            return CallableSiteConfigComponent(
+            return CallableComponent(
                 source_obj=definition, fn=file_path_extractor, can_accept_response=True
             )
 
-        assert callable(definition)
+        elif callable(definition):
+            callable_definition = self.ensure_callable_signature(
+                definition,
+                {"url", "link_el", "url_match", "res", "content_node"},
+            )
 
-        check_supports_named_args_for_function(
-            definition, {"url", "link_el", "url_match", "res", "content_node"}
-        )
-
-        return CallableSiteConfigComponent(
-            source_obj=definition, fn=definition, can_accept_response=True
-        )
+            return CallableComponent(
+                source_obj=definition, fn=definition, can_accept_response=True
+            )
+        else:
+            return None
 
 
 @typechecked
-class ContentExtractorSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-
-    def validate(
-        self, definition: Union[str, Callable[..., Union[str, bytes, None]]]
-    ) -> CallableSiteConfigComponent[Union[str, bytes]]:
+class ContentExtractorSchema(CallableComponentSchemaBase[Union[str, bytes]]):
+    def create_if_available(
+        self, definition: Any
+    ) -> Optional[CallableComponent[Union[str, bytes]]]:
         if isinstance(definition, str):
             xpath = definition
 
@@ -884,33 +914,30 @@ class ContentExtractorSchema(Schema):
                 content = content_node.xpath(xpath).getall()
                 return json.dumps(content)
 
-            return CallableSiteConfigComponent(
+            return CallableComponent(
                 source_obj=definition, fn=content_extractor, can_accept_response=True
             )
 
-        assert callable(definition)
+        elif callable(definition):
+            callable_definition = self.ensure_callable_signature(
+                definition,
+                {"url", "link_el", "url_match", "res", "content_node"},
+            )
 
-        check_supports_named_args_for_function(
-            definition, {"url", "link_el", "url_match", "res", "content_node"}
-        )
-
-        return CallableSiteConfigComponent(
-            source_obj=definition, fn=definition, can_accept_response=True
-        )
+            return CallableComponent(
+                source_obj=definition, fn=definition, can_accept_response=True
+            )
+        else:
+            return None
 
 
 @typechecked
-class AssertionMatcherSchema(Schema):
-    def __init__(self) -> None:
-        super().__init__(None)
-
-    def validate(
-        self, assertion_matcher_def: Union[str, Callable[..., bool], List]
-    ) -> CallableSiteConfigComponent[bool]:
-        if isinstance(assertion_matcher_def, list):
+class AssertionMatcherSchema(CallableComponentSchemaBase[bool]):
+    def create_if_available(self, definition: Any) -> Optional[CallableComponent[bool]]:
+        if isinstance(definition, list):
             sub_matchers = []
-            for sub_assertion_matcher_def in assertion_matcher_def:
-                sub_matcher = self.validate(sub_assertion_matcher_def)
+            for sub_definition in definition:
+                sub_matcher = self.validate(sub_definition)
                 sub_matchers.append(sub_matcher)
 
             def multiple_assertion_matcher(
@@ -930,83 +957,81 @@ class AssertionMatcherSchema(Schema):
                     )
                 return True
 
-            return CallableSiteConfigComponent(
-                source_obj=assertion_matcher_def,
+            return CallableComponent(
+                source_obj=definition,
                 fn=multiple_assertion_matcher,
                 can_accept_response=True,
             )
 
-        if isinstance(assertion_matcher_def, str):
-            xpath = assertion_matcher_def
+        if isinstance(definition, str):
+            xpath = definition
 
             def xpath_assertion_matcher(content_node: SelectorList) -> bool:
                 if content_node.xpath(f"boolean({xpath})").get() == "0":
-                    raise AssertionError(f"AssertionMatcher failed xpath: {xpath}")
+                    raise AssertionError(
+                        error_message("AssertionMatcher failed xpath below", xpath)
+                    )
                 return True
 
-            return CallableSiteConfigComponent(
+            return CallableComponent(
                 source_obj=xpath,
                 fn=xpath_assertion_matcher,
                 can_accept_response=True,
             )
 
-        assert callable(assertion_matcher_def)
+        elif callable(definition):
+            assertion_matcher_impl = self.ensure_callable_signature(
+                definition,
+                {"url", "link_el", "url_match", "res", "content_node"},
+            )
 
-        check_supports_named_args_for_function(
-            assertion_matcher_def,
-            {"url", "link_el", "url_match", "res", "content_node"},
-        )
+            assertion_matcher_sub_component = CallableComponent(
+                source_obj=assertion_matcher_impl,
+                fn=assertion_matcher_impl,
+                can_accept_response=True,
+            )
 
-        assertion_matcher_impl = assertion_matcher_def
-        assertion_matcher_sub_component = CallableSiteConfigComponent(
-            source_obj=assertion_matcher_impl,
-            fn=assertion_matcher_impl,
-            can_accept_response=True,
-        )
+            def assertion_matcher(
+                url: str,
+                link_el: Selector,
+                url_match: re.Match,
+                res: Response,
+                content_node: SelectorList,
+            ) -> bool:
+                if not assertion_matcher_sub_component(
+                    url=url,
+                    link_el=link_el,
+                    url_match=url_match,
+                    res=res,
+                    content_node=content_node,
+                ):
+                    matcher_source = f"\n{inspect.getsource(assertion_matcher_impl)}\n"
+                    raise AssertionError(
+                        error_message(
+                            "AssertionMatcher failed in function below", matcher_source
+                        )
+                    )
+                return True
 
-        def assertion_matcher(
-            url: str,
-            link_el: Selector,
-            url_match: re.Match,
-            res: Response,
-            content_node: SelectorList,
-        ) -> bool:
-            if not assertion_matcher_sub_component(
-                url=url,
-                link_el=link_el,
-                url_match=url_match,
-                res=res,
-                content_node=content_node,
-            ):
-                matcher_source = f"\n{inspect.getsource(assertion_matcher_impl)}\n"
-                raise AssertionError(
-                    f"AssertionMatcher failed in function: {matcher_source}"
-                )
-            return True
-
-        return CallableSiteConfigComponent(
-            source_obj=assertion_matcher_impl,
-            fn=assertion_matcher,
-            can_accept_response=True,
-        )
-
-
-T = TypeVar("T")
+            return CallableComponent(
+                source_obj=assertion_matcher_impl,
+                fn=assertion_matcher,
+                can_accept_response=True,
+            )
+        else:
+            return None
 
 
 @typechecked
-def check_supports_named_args_for_function(
-    extractor_fn: Callable, to_be_passed_named_args: Set[str]
-) -> None:
-    if not accepts_all_named_args(extractor_fn):
-        required_named_args = get_all_required_named_args(extractor_fn)
-        not_to_be_passed_named_args = list(
-            filter(lambda arg: arg not in to_be_passed_named_args, required_named_args)
-        )
-        if 0 < len(not_to_be_passed_named_args):
-            raise SchemaError(
-                f"Unsupported argument names detected in function below: {', '.join(not_to_be_passed_named_args)}\n{indent(inspect.getsource(extractor_fn), '    ')}"
-            )
+def error_message(message: str, source_obj: Any) -> str:
+    if hasattr(source_obj, "get_source_string") and callable(
+        source_obj.get_source_string
+    ):
+        source_string = source_obj.get_source_string()
+    else:
+        source_string = get_source_string(source_obj)
+
+    return message + ":\n" + indent(source_string, "    ")
 
 
 @typechecked
@@ -1039,3 +1064,14 @@ def get_named_parameter_objs(fn: Callable) -> List[inspect.Parameter]:
             signature.parameters.values(),
         )
     )
+
+
+@typechecked
+def get_source_string(source_obj: Any) -> str:
+    try:
+        source_string = f"{inspect.getsource(source_obj)}"
+    except:
+        source_string = f"{source_obj}\n"
+
+    assert re.search(r"\n$", source_string)
+    return source_string
