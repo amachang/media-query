@@ -19,6 +19,8 @@ ITEM_PIPELINES = {
     "media_scrapy.pipelines.SaveDownloadedFilePipeline": 500,
 }
 
+LOG_FORMATTER = "media_scrapy.logformatters.LogFormatter"
+
 FILES_STORE = path.join(gettempdir(), "media_scrapy")
 FILES_EXPIRES = 0
 
