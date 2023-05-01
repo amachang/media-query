@@ -3,8 +3,13 @@ from typeguard import typechecked
 
 
 @typechecked
-class MediaFiles(scrapy.Item):
-    file_urls = scrapy.Field()
-    file_paths = scrapy.Field()
-    file_contents = scrapy.Field()
-    files = scrapy.Field()
+class DownloadUrlItem(scrapy.Item):
+    url = scrapy.Field()
+    file_path = scrapy.Field()
+    tmp_file_path = scrapy.Field()
+
+
+@typechecked
+class SaveFileContentItem(scrapy.Item):
+    file_path = scrapy.Field()
+    file_content = scrapy.Field()

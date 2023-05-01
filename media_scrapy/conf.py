@@ -60,221 +60,126 @@ class SiteConfig:
 
         self.root_structure_node = parse_structure_list(conf_def.structure)
 
-    def get_url_infos(self, res: Response) -> List["UrlInfo"]:
+    def get_url_commands(self, res: Response) -> List["UrlCommand"]:
         if "url_info" not in res.meta:
-            # first request
-            return self.get_url_infos_with_parent_impl(
-                res,
-                parent_structure_path=[],
-                parent_link_el=Selector(
-                    f"<a href='{html.escape(res.url)}'>{res.xpath('//title/text()').get()}</a>"
-                ),
-                original_parent_file_path=".",
-            )
+            url_info = UrlInfo(res.url)
         else:
-            assert isinstance(res.meta["url_info"], ParseUrlInfo)
-            return self.get_url_infos_with_parent_url_info(res, res.meta["url_info"])
+            assert isinstance(res.meta["url_info"], UrlInfo)
+            url_info = res.meta["url_info"]
+        return self.get_url_commands_with_url_info(res, url_info)
 
-    def get_url_infos_with_parent_url_info(
-        self, res: Response, parent_url_info: "ParseUrlInfo"
-    ) -> List["UrlInfo"]:
-        return self.get_url_infos_with_parent_impl(
-            res,
-            parent_structure_path=parent_url_info.structure_path,
-            parent_link_el=parent_url_info.link_el,
-            parent_url_match=parent_url_info.url_match,
-            original_parent_file_path=parent_url_info.file_path,
+    def get_url_commands_with_url_info(
+        self, res: Response, req_url_info: "UrlInfo"
+    ) -> List["UrlCommand"]:
+        structure_node = self.root_structure_node.get_node_by_path(
+            req_url_info.structure_path
         )
+        url_info = structure_node.create_response_url_info(req_url_info, res)
 
-    def get_url_infos_with_parent_impl(
-        self,
-        res: Response,
-        parent_structure_path: List[int],
-        original_parent_file_path: str,
-        parent_link_el: Selector,
-        parent_url_match: Optional[re.Match] = None,
-    ) -> List["UrlInfo"]:
-        parent_structure_node = self.root_structure_node.get_node_by_path(
-            parent_structure_path
-        )
+        assert isinstance(url_info, ResponseUrlInfo)
 
-        content_node = parent_structure_node.get_content_node(
-            url=res.url,
-            link_el=parent_link_el,
-            url_match=parent_url_match,
-            res=res,
-        )
-        parent_structure_node.assert_content(
-            url=res.url,
-            link_el=parent_link_el,
-            url_match=parent_url_match,
-            res=res,
-            content_node=content_node,
-        )
-        parent_file_path_component = (
-            parent_structure_node.get_file_path_component_after_request(
-                url=res.url,
-                link_el=parent_link_el,
-                url_match=parent_url_match,
-                res=res,
-                content_node=content_node,
-            )
-        )
-        parent_file_path = original_parent_file_path
-        if parent_file_path_component is not None:
-            parent_file_path = path.join(parent_file_path, parent_file_path_component)
-
-        if parent_structure_node.is_leaf():
-            if parent_structure_node.needs_response_for_file_content():
-                file_content = parent_structure_node.extract_file_content(
-                    url=res.url,
-                    link_el=parent_link_el,
-                    url_match=parent_url_match,
-                    res=res,
-                    content_node=content_node,
-                )
+        if structure_node.is_leaf():
+            if structure_node.needs_response_for_file_content():
+                file_content = structure_node.extract_file_content(url_info)
             else:
-                file_content = res.body
+                file_content = url_info.res.body
 
             return [
-                FileContentUrlInfo(
-                    url=res.url, file_path=parent_file_path, file_content=file_content
+                SaveFileContentCommand(
+                    file_path=url_info.file_path, file_content=file_content
                 )
             ]
 
-        link_infos = None
+        link_infos = get_links(url_info.res, url_info.content_node)
 
-        url_infos: List[UrlInfo] = []
-        url_info: UrlInfo
+        commands: List[UrlCommand] = []
 
         # search next page
-        if parent_structure_node.paging:
-            link_infos = (
-                get_links(res, content_node) if link_infos is None else link_infos
-            )
+        if structure_node.paging:
             for link_el, url in link_infos:
-                is_url_matched, url_match = parent_structure_node.match_url(url)
+                is_url_matched, url_match = structure_node.match_url(url)
                 if is_url_matched:
-                    assert not parent_structure_node.is_leaf()
-                    converted_url = parent_structure_node.convert_url(
-                        url=url, link_el=link_el, url_match=url_match
-                    )
-                    next_page_file_path = original_parent_file_path
-                    if parent_structure_node.can_get_file_path_before_request():
-                        next_page_file_path = path.dirname(next_page_file_path)
-                        file_path_component = parent_structure_node.get_file_path_component_before_request(
-                            url=converted_url, link_el=link_el, url_match=url_match
-                        )
-                        assert isinstance(file_path_component, str)
-                        next_page_file_path = path.join(
-                            next_page_file_path, file_path_component
-                        )
-                    url_info = ParseUrlInfo(
-                        url=converted_url,
-                        file_path=next_page_file_path,
-                        structure_path=parent_structure_path,
-                        link_el=link_el,
-                        url_match=url_match,
-                    )
-                    url_infos.append(url_info)
+                    assert not structure_node.is_leaf()
+
+                    next_url_info = url_info.next(url, link_el, url_match)
+
+                    if structure_node.has_file_path_component():
+                        next_url_info.drop_last_file_path_component()
+
+                    structure_node.update_url_info_before_request(next_url_info)
+
+                    commands.append(RequestUrlCommand(url_info=next_url_info))
 
         forwardable_structure_node_found = False
 
-        for structure_index, structure_node in enumerate(
-            parent_structure_node.children
-        ):
-            if structure_node.needs_no_request() or parent_structure_node.is_root:
-                if parent_structure_node.is_root:
-                    parent_url_is_matched, parent_url_match = structure_node.match_url(
-                        res.url
+        for structure_index, next_structure_node in enumerate(structure_node.children):
+            if next_structure_node.needs_no_request() or structure_node.is_root:
+                next_url_info = url_info.forward(structure_index)
+
+                if structure_node.is_root:
+                    is_url_matched, url_match = next_structure_node.match_url(
+                        next_url_info.url
                     )
-                    if not parent_url_is_matched:
+                    if not is_url_matched:
                         continue
+                    next_url_info.url_match = url_match
 
                 forwardable_structure_node_found = True
 
-                file_path_component = (
-                    structure_node.get_file_path_component_before_request(
-                        url=res.url, link_el=parent_link_el, url_match=parent_url_match
-                    )
-                )
-                file_path = parent_file_path
-                if file_path_component is not None:
-                    file_path = path.join(file_path, file_path_component)
+                next_structure_node.update_url_info_before_request(next_url_info)
 
-                converted_url = structure_node.convert_url(
-                    url=res.url,
-                    link_el=parent_link_el,
-                    url_match=parent_url_match,
+                sub_commands = self.get_url_commands_with_url_info(
+                    url_info.res, next_url_info
                 )
-
-                url_info = ParseUrlInfo(
-                    url=converted_url,
-                    file_path=file_path,
-                    structure_path=parent_structure_path + [structure_index],
-                    link_el=parent_link_el,
-                    url_match=parent_url_match,
-                )
-                sub_url_infos = self.get_url_infos_with_parent_url_info(res, url_info)
-                url_infos.extend(sub_url_infos)
+                commands.extend(sub_commands)
             else:
-                link_infos = (
-                    get_links(res, content_node) if link_infos is None else link_infos
-                )
                 for link_el, url in link_infos:
-                    is_url_matched, url_match = structure_node.match_url(url)
+                    is_url_matched, url_match = next_structure_node.match_url(url)
                     if is_url_matched:
-                        file_path_component = (
-                            structure_node.get_file_path_component_before_request(
-                                url=url, link_el=link_el, url_match=url_match
-                            )
+                        next_url_info = url_info.next(
+                            url, link_el, url_match, structure_index
                         )
-                        file_path = parent_file_path
-                        if file_path_component is not None:
-                            file_path = path.join(file_path, file_path_component)
+                        next_structure_node.update_url_info_before_request(
+                            next_url_info
+                        )
 
-                        converted_url = structure_node.convert_url(
-                            url=url, link_el=link_el, url_match=url_match
-                        )
                         needs_response_for_file = (
-                            structure_node.needs_response_for_file_path()
-                            or structure_node.needs_response_for_file_content()
+                            next_structure_node.needs_response_for_file_path()
+                            or next_structure_node.needs_response_for_file_content()
                         )
 
-                        if structure_node.is_leaf() and not needs_response_for_file:
-                            if structure_node.can_get_file_content_before_request():
-                                file_content = structure_node.extract_file_content_without_response(
-                                    url=converted_url,
-                                    link_el=link_el,
-                                    url_match=url_match,
+                        if (
+                            next_structure_node.is_leaf()
+                            and not needs_response_for_file
+                        ):
+                            if (
+                                next_structure_node.can_get_file_content_before_request()
+                            ):
+                                file_content = next_structure_node.extract_file_content_without_response(
+                                    next_url_info
                                 )
-                                url_info = FileContentUrlInfo(
-                                    url=converted_url,
-                                    file_path=file_path,
-                                    file_content=file_content,
+                                commands.append(
+                                    SaveFileContentCommand(
+                                        file_path=next_url_info.file_path,
+                                        file_content=file_content,
+                                    )
                                 )
                             else:
-                                url_info = DownloadUrlInfo(
-                                    url=converted_url,
-                                    file_path=file_path,
+                                commands.append(
+                                    DownloadUrlCommand(
+                                        url=next_url_info.url,
+                                        file_path=next_url_info.file_path,
+                                    )
                                 )
                         else:
-                            structure_path = parent_structure_path + [structure_index]
-                            url_info = ParseUrlInfo(
-                                url=converted_url,
-                                file_path=file_path,
-                                structure_path=structure_path,
-                                link_el=link_el,
-                                url_match=url_match,
-                            )
-                        url_infos.append(url_info)
+                            commands.append(RequestUrlCommand(url_info=next_url_info))
 
-        if not forwardable_structure_node_found and parent_structure_node.is_root:
+        if not forwardable_structure_node_found and structure_node.is_root:
             url_matcher_sources = [
                 f"{index}: <no url matcher in definition>\n"
                 if node.url_matcher is None
                 else f"{index}: {node.url_matcher.get_source_string()}"
-                for index, node in enumerate(parent_structure_node.children)
+                for index, node in enumerate(structure_node.children)
             ]
             url_matcher_sources_text = "".join(url_matcher_sources)
             raise MediaScrapyError(
@@ -283,37 +188,131 @@ class SiteConfig:
                 )
             )
 
-        return url_infos
+        return commands
 
 
 LoginConfig = namedtuple("LoginConfig", ["url", "formdata"])
 
 
 @typechecked
-@dataclass
 class UrlInfo:
+    url: str
+    link_el: Selector
+    url_match: Optional[re.Match]
+
+    file_path: str
+    structure_path: List[int]
+
+    def __init__(
+        self,
+        url: str,
+        link_el: Optional[Selector] = None,
+        url_match: Optional[re.Match] = None,
+        file_path: Optional[str] = None,
+        structure_path: Optional[List[int]] = None,
+    ) -> None:
+        self.url = url
+
+        if link_el is None:
+            self.link_el = Selector(
+                f"<a href='{html.escape(url)}'>{html.escape(url)}</a>"
+            )
+        else:
+            self.link_el = link_el
+
+        self.url_match = url_match
+
+        if file_path is None:
+            self.file_path = ""
+        else:
+            self.file_path = file_path
+
+        if structure_path is None:
+            self.structure_path = []
+        else:
+            self.structure_path = structure_path
+
+    def add_file_path_component(self, file_path_component: str) -> None:
+        if len(self.file_path) == 0:
+            self.file_path = file_path_component
+        else:
+            self.file_path = path.join(self.file_path, file_path_component)
+
+    def drop_last_file_path_component(self) -> None:
+        assert 0 < len(self.file_path)
+        dropped_file_path = path.dirname(self.file_path)
+        assert dropped_file_path != self.file_path
+        self.file_path = dropped_file_path
+
+
+class ResponseUrlInfo(UrlInfo):
+    res: Response
+    content_node: SelectorList
+
+    def __init__(
+        self, original_url_info: UrlInfo, res: Response, content_node: SelectorList
+    ):
+        self.url = original_url_info.url
+        self.link_el = original_url_info.link_el
+        self.url_match = original_url_info.url_match
+        self.file_path = original_url_info.file_path
+        self.structure_path = original_url_info.structure_path
+        self.res = res
+        self.content_node = content_node
+
+    def next(
+        self,
+        url: str,
+        link_el: Selector,
+        url_match: Optional[re.Match],
+        structure_index: Optional[int] = None,
+    ) -> "UrlInfo":
+        if structure_index is None:
+            next_structure_path = self.structure_path
+        else:
+            next_structure_path = self.structure_path + [structure_index]
+        return UrlInfo(
+            url=url,
+            link_el=link_el,
+            url_match=url_match,
+            file_path=self.file_path,
+            structure_path=next_structure_path,
+        )
+
+    def forward(self, structure_index: int) -> "UrlInfo":
+        return UrlInfo(
+            url=self.url,
+            link_el=self.link_el,
+            url_match=self.url_match,
+            file_path=self.file_path,
+            structure_path=self.structure_path + [structure_index],
+        )
+
+
+@typechecked
+@dataclass
+class UrlCommand:
+    pass
+
+
+@typechecked
+@dataclass
+class DownloadUrlCommand(UrlCommand):
     url: str
     file_path: str
 
 
 @typechecked
 @dataclass
-class DownloadUrlInfo(UrlInfo):
-    pass
-
-
-@typechecked
-@dataclass
-class FileContentUrlInfo(UrlInfo):
+class SaveFileContentCommand(UrlCommand):
+    file_path: str
     file_content: bytes
 
 
 @typechecked
 @dataclass
-class ParseUrlInfo(UrlInfo):
-    link_el: Selector
-    structure_path: List[int]
-    url_match: Optional[re.Match]
+class RequestUrlCommand(UrlCommand):
+    url_info: UrlInfo
 
 
 U = TypeVar("U")
@@ -404,17 +403,14 @@ class StructureNode:
     def is_leaf(self) -> bool:
         return len(self.children) == 0
 
+    def has_file_path_component(self) -> bool:
+        return self.file_path_extractor is not None
+
     def needs_response_for_file_path(self) -> bool:
         if self.file_path_extractor is None:
             return False
         else:
             return self.file_path_extractor.needs_response
-
-    def can_get_file_path_before_request(self) -> bool:
-        if self.file_path_extractor is None:
-            return False
-        else:
-            return not self.file_path_extractor.needs_response
 
     def needs_response_for_file_content(self) -> bool:
         if self.file_content_extractor is None:
@@ -450,6 +446,24 @@ class StructureNode:
             child_node = self.children[child_index]
             return child_node.get_node_by_path(path[1:])
 
+    def update_url_info_before_request(self, url_info: UrlInfo) -> None:
+        file_path_component = self.get_file_path_component_before_request(url_info)
+        if file_path_component is not None:
+            url_info.add_file_path_component(file_path_component)
+        url_info.url = self.convert_url(url_info)
+
+    def create_response_url_info(
+        self, url_info: UrlInfo, res: Response
+    ) -> ResponseUrlInfo:
+        res_url_info = ResponseUrlInfo(
+            url_info, res, self.get_content_node(url_info, res)
+        )
+        file_path_component = self.get_file_path_component_after_response(res_url_info)
+        if file_path_component is not None:
+            res_url_info.add_file_path_component(file_path_component)
+        self.assert_content(res_url_info)
+        return res_url_info
+
     def match_url(self, url: str) -> Tuple[bool, Optional[re.Match]]:
         if self.url_matcher is None:
             return False, None
@@ -461,105 +475,77 @@ class StructureNode:
                 assert isinstance(matched, re.Match)
                 return True, matched
 
-    def convert_url(
-        self,
-        url: str,
-        link_el: Selector,
-        url_match: Optional[re.Match],
-    ) -> str:
+    def convert_url(self, url_info: UrlInfo) -> str:
         if self.url_converter is not None:
             converted_url = self.url_converter(
-                url=url, link_el=link_el, url_match=url_match
+                url=url_info.url, link_el=url_info.link_el, url_match=url_info.url_match
             )
             return converted_url
         else:
-            return url
+            return url_info.url
 
-    def get_content_node(
-        self,
-        url: str,
-        link_el: Selector,
-        url_match: Optional[re.Match],
-        res: Response,
-    ) -> SelectorList:
+    def get_content_node(self, url_info: UrlInfo, res: Response) -> SelectorList:
         if self.content_node_extractor:
             return self.content_node_extractor(
-                url=url, link_el=link_el, url_match=url_match, res=res
+                url=url_info.url,
+                link_el=url_info.link_el,
+                url_match=url_info.url_match,
+                res=res,
             )
         else:
             return SelectorList([res.selector])
 
     def get_file_path_component_before_request(
-        self,
-        url: str,
-        link_el: Selector,
-        url_match: Optional[re.Match],
+        self, url_info: UrlInfo
     ) -> Optional[str]:
         if (
             self.file_path_extractor is not None
             and not self.needs_response_for_file_path()
         ):
             result = self.file_path_extractor(
-                url=url, link_el=link_el, url_match=url_match
+                url=url_info.url, link_el=url_info.link_el, url_match=url_info.url_match
             )
             assert isinstance(result, str)
             return result
         else:
             return None
 
-    def get_file_path_component_after_request(
-        self,
-        url: str,
-        res: Response,
-        content_node: SelectorList,
-        link_el: Selector,
-        url_match: Optional[re.Match],
+    def get_file_path_component_after_response(
+        self, url_info: ResponseUrlInfo
     ) -> Optional[str]:
         if self.needs_response_for_file_path():
             assert self.file_path_extractor is not None
             result = self.file_path_extractor(
-                url=url,
-                res=res,
-                content_node=content_node,
-                link_el=link_el,
-                url_match=url_match,
+                url=url_info.url,
+                res=url_info.res,
+                content_node=url_info.content_node,
+                link_el=url_info.link_el,
+                url_match=url_info.url_match,
             )
             assert isinstance(result, str)
             return result
         else:
             return None
 
-    def extract_file_content(
-        self,
-        url: str,
-        res: Response,
-        content_node: SelectorList,
-        link_el: Selector,
-        url_match: Optional[re.Match],
-    ) -> bytes:
+    def extract_file_content(self, url_info: ResponseUrlInfo) -> bytes:
         assert self.file_content_extractor is not None
         return self.extract_file_content_impl(
             {
-                "url": url,
-                "res": res,
-                "content_node": content_node,
-                "link_el": link_el,
-                "url_match": url_match,
+                "url": url_info.url,
+                "res": url_info.res,
+                "content_node": url_info.content_node,
+                "link_el": url_info.link_el,
+                "url_match": url_info.url_match,
             }
         )
 
-    def extract_file_content_without_response(
-        self,
-        url: str,
-        link_el: Selector,
-        url_match: Optional[re.Match],
-    ) -> bytes:
+    def extract_file_content_without_response(self, url_info: UrlInfo) -> bytes:
         assert self.file_content_extractor is not None
         return self.extract_file_content_impl(
             {
-                "url": url,
-                "link_el": link_el,
-                "url_match": url_match,
+                "url": url_info.url,
+                "link_el": url_info.link_el,
+                "url_match": url_info.url_match,
             }
         )
 
@@ -572,28 +558,21 @@ class StructureNode:
             assert isinstance(file_content, bytes)
             return file_content
 
-    def assert_content(
-        self,
-        url: str,
-        res: Response,
-        content_node: SelectorList,
-        link_el: Optional[Selector],
-        url_match: Optional[re.Match],
-    ) -> None:
+    def assert_content(self, url_info: ResponseUrlInfo) -> None:
         if self.assertion_matcher is not None:
             kwargs = {
-                "url": url,
-                "res": res,
-                "content_node": content_node,
-                "link_el": link_el,
-                "url_match": url_match,
+                "url": url_info.url,
+                "res": url_info.res,
+                "content_node": url_info.content_node,
+                "link_el": url_info.link_el,
+                "url_match": url_info.url_match,
             }
             self.assertion_matcher(
-                url=url,
-                res=res,
-                content_node=content_node,
-                link_el=link_el,
-                url_match=url_match,
+                url=url_info.url,
+                res=url_info.res,
+                content_node=url_info.content_node,
+                link_el=url_info.link_el,
+                url_match=url_info.url_match,
             )
 
     def check(self) -> None:

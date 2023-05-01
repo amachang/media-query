@@ -128,7 +128,7 @@ def test_site_config_init_error() -> None:
         SiteConfig(ConfDef5())
 
 
-def test_get_url_infos_with_file_content() -> None:
+def test_get_url_commands_with_file_content() -> None:
     class ConfDef:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -144,13 +144,12 @@ def test_get_url_infos_with_file_content() -> None:
     res = fake_response(
         url="http://example.com/", body=b"<p>foo</p> <p>bar</p> <div>baz</div>"
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 1
-    url_info = url_infos[0]
-    assert isinstance(url_info, FileContentUrlInfo)
-    assert url_info.url == "http://example.com/"
-    assert url_info.file_path == "./test.json"
-    assert url_info.file_content == json.dumps(["foo", "bar"]).encode("utf-8")
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, SaveFileContentCommand)
+    assert command.file_path == "test.json"
+    assert command.file_content == json.dumps(["foo", "bar"]).encode("utf-8")
 
     class ConfDef2:
         start_url = "http://example.com/"
@@ -168,7 +167,7 @@ def test_get_url_infos_with_file_content() -> None:
         SiteConfig(ConfDef2())
 
 
-def test_get_url_infos_with_paging_file_path_obtained_before_request() -> None:
+def test_get_url_commands_with_paging_file_path_obtained_before_request() -> None:
     def no_request_file_path_extractor(url_match: re.Match) -> str:
         page_number_str = url_match.group(2)
         if page_number_str is None:
@@ -194,55 +193,59 @@ def test_get_url_infos_with_paging_file_path_obtained_before_request() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/foo"
-    assert download_url_infos[0].file_path == "./1/foo.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bar"
-    assert download_url_infos[1].file_path == "./1/bar.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/foo"
+    assert download_commands[0].file_path == "1/foo.txt"
+    assert download_commands[1].url == "http://example.com/contents/bar"
+    assert download_commands[1].file_path == "1/bar.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=2"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=2">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "./2"
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=2"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=2">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == "2"
 
     res = fake_response(
         url="http://example.com/?page=2",
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
-        url_info=parse_url_info,
+        url_info=request_url_command.url_info,
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/aaa"
-    assert download_url_infos[0].file_path == "./2/aaa.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bbb"
-    assert download_url_infos[1].file_path == "./2/bbb.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/aaa"
+    assert download_commands[0].file_path == "2/aaa.txt"
+    assert download_commands[1].url == "http://example.com/contents/bbb"
+    assert download_commands[1].file_path == "2/bbb.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=3"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=3">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "./3"
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=3"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=3">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == "3"
 
 
-def test_get_url_infos_with_paging_file_path_obtained_after_request() -> None:
+def test_get_url_commands_with_paging_file_path_obtained_after_request() -> None:
     def with_request_file_path_extractor(res: Response, url_match: re.Match) -> str:
         page_number_str = url_match.group(2)
         if page_number_str is None:
@@ -267,55 +270,59 @@ def test_get_url_infos_with_paging_file_path_obtained_after_request() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/foo"
-    assert download_url_infos[0].file_path == "./1/foo.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bar"
-    assert download_url_infos[1].file_path == "./1/bar.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/foo"
+    assert download_commands[0].file_path == "1/foo.txt"
+    assert download_commands[1].url == "http://example.com/contents/bar"
+    assert download_commands[1].file_path == "1/bar.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=2"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=2">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "."
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=2"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=2">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == ""
 
     res = fake_response(
         url="http://example.com/?page=2",
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
-        url_info=parse_url_info,
+        url_info=request_url_command.url_info,
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/aaa"
-    assert download_url_infos[0].file_path == "./2/aaa.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bbb"
-    assert download_url_infos[1].file_path == "./2/bbb.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/aaa"
+    assert download_commands[0].file_path == "2/aaa.txt"
+    assert download_commands[1].url == "http://example.com/contents/bbb"
+    assert download_commands[1].file_path == "2/bbb.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=3"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=3">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "."
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=3"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=3">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == ""
 
 
-def test_get_url_infos_with_paging_without_url_match() -> None:
+def test_get_url_commands_with_paging_without_url_match() -> None:
     def url_matcher(url: str) -> bool:
         parsed_url = urlparse(url)
         if parsed_url.query == "":
@@ -362,55 +369,59 @@ def test_get_url_infos_with_paging_without_url_match() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/foo"
-    assert download_url_infos[0].file_path == "./1/foo.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bar"
-    assert download_url_infos[1].file_path == "./1/bar.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/foo"
+    assert download_commands[0].file_path == "1/foo.txt"
+    assert download_commands[1].url == "http://example.com/contents/bar"
+    assert download_commands[1].file_path == "1/bar.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=2"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=2">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "./2"
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=2"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=2">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == "2"
 
     res = fake_response(
         url="http://example.com/?page=2",
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
-        url_info=parse_url_info,
+        url_info=request_url_command.url_info,
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 3
-    download_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 3
+    download_commands = [
+        command for command in commands if isinstance(command, DownloadUrlCommand)
     ]
-    assert len(download_url_infos) == 2
-    assert download_url_infos[0].url == "http://example.com/contents/aaa"
-    assert download_url_infos[0].file_path == "./2/aaa.txt"
-    assert download_url_infos[1].url == "http://example.com/contents/bbb"
-    assert download_url_infos[1].file_path == "./2/bbb.txt"
+    assert len(download_commands) == 2
+    assert download_commands[0].url == "http://example.com/contents/aaa"
+    assert download_commands[0].file_path == "2/aaa.txt"
+    assert download_commands[1].url == "http://example.com/contents/bbb"
+    assert download_commands[1].file_path == "2/bbb.txt"
 
-    parse_url_infos = [
-        url_info for url_info in url_infos if isinstance(url_info, ParseUrlInfo)
+    request_url_commands = [
+        command for command in commands if isinstance(command, RequestUrlCommand)
     ]
-    assert len(parse_url_infos) == 1
-    parse_url_info = parse_url_infos[0]
-    assert parse_url_info.url == "http://example.com/?page=3"
-    assert parse_url_info.link_el.extract() == '<a href="/?page=3">next</a>'
-    assert parse_url_info.structure_path == [0]
-    assert parse_url_info.file_path == "./3"
+    assert len(request_url_commands) == 1
+    request_url_command = request_url_commands[0]
+    assert request_url_command.url_info.url == "http://example.com/?page=3"
+    assert (
+        request_url_command.url_info.link_el.extract() == '<a href="/?page=3">next</a>'
+    )
+    assert request_url_command.url_info.structure_path == [0]
+    assert request_url_command.url_info.file_path == "3"
 
 
-def test_get_url_infos_without_url_match_object() -> None:
+def test_get_url_commands_without_url_match_object() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -430,20 +441,21 @@ def test_get_url_infos_without_url_match_object() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://example.com/contents/foo",
         "http://example.com/contents/bar",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/foo.txt",
-        "./foo/bar.txt",
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.txt",
+        "foo/bar.txt",
     ]
 
 
-def test_get_url_infos_multiple_root() -> None:
+def test_get_url_commands_multiple_root() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -479,20 +491,21 @@ def test_get_url_infos_multiple_root() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://example.com/contents/foo",
         "http://example.com/contents/bar",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./bar/foo.txt",
-        "./bar/bar.txt",
+    assert [command.file_path for command in download_commands] == [
+        "bar/foo.txt",
+        "bar/bar.txt",
     ]
 
 
-def test_get_url_infos_start_url_not_match_with_any_url_matcher() -> None:
+def test_get_url_commands_start_url_not_match_with_any_url_matcher() -> None:
     class ConfDef2:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -527,10 +540,10 @@ def test_get_url_infos_start_url_not_match_with_any_url_matcher() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(MediaScrapyError):
-        config.get_url_infos(res)
+        config.get_url_commands(res)
 
 
-def test_get_url_infos_using_as_url() -> None:
+def test_get_url_commands_using_as_url() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -551,16 +564,17 @@ def test_get_url_infos_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://cdn.example.com/images/foo.jpg",
         "http://cdn.example.com/images/bar.jpg",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/foo.jpg",
-        "./foo/bar.jpg",
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.jpg",
+        "foo/bar.jpg",
     ]
 
     class ConfDef2:
@@ -583,14 +597,15 @@ def test_get_url_infos_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 1
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 1
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://cdn.example.com/images/aaa.jpg",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/bbb.jpg",
+    assert [command.file_path for command in download_commands] == [
+        "foo/bbb.jpg",
     ]
 
     class ConfDef3:
@@ -613,16 +628,17 @@ def test_get_url_infos_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         f"http://cdn.example.com/images/{md5('foo'.encode('utf-8')).hexdigest()}.jpg",
         f"http://cdn.example.com/images/{md5('bar'.encode('utf-8')).hexdigest()}.jpg",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/foo.jpg",
-        "./foo/bar.jpg",
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.jpg",
+        "foo/bar.jpg",
     ]
 
     class ConfDef4:
@@ -682,10 +698,10 @@ def test_get_url_infos_using_as_url() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(MediaScrapyError):
-        config.get_url_infos(res)
+        config.get_url_commands(res)
 
 
-def test_get_url_infos_specific_content_area() -> None:
+def test_get_url_commands_specific_content_area() -> None:
     res = fake_response(
         url="http://example.com/",
         body=b"""
@@ -720,16 +736,17 @@ def test_get_url_infos_specific_content_area() -> None:
         ]
 
     config = SiteConfig(ConfDef1())
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://example.com/contents/foo.jpg",
         "http://example.com/contents/bar.jpg",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/foo.jpg",
-        "./foo/bar.jpg",
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.jpg",
+        "foo/bar.jpg",
     ]
 
     class ConfDef2:
@@ -768,16 +785,17 @@ def test_get_url_infos_specific_content_area() -> None:
         ]
 
     config = SiteConfig(ConfDef3())
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    assert all(isinstance(url_info, DownloadUrlInfo) for url_info in url_infos)
-    assert [url_info.url for url_info in url_infos] == [
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
         "http://example.com/contents/foo.jpg",
         "http://example.com/contents/bar.jpg",
     ]
-    assert [url_info.file_path for url_info in url_infos] == [
-        "./foo/foo.jpg",
-        "./foo/bar.jpg",
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.jpg",
+        "foo/bar.jpg",
     ]
 
     class ConfDef4:
@@ -801,7 +819,7 @@ def test_get_url_infos_specific_content_area() -> None:
         SiteConfig(ConfDef4())
 
 
-def test_get_url_infos_with_binary_file() -> None:
+def test_get_url_commands_with_binary_file() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -823,25 +841,23 @@ def test_get_url_infos_with_binary_file() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    url_info = url_infos[0]
-    assert isinstance(url_info, FileContentUrlInfo)
-    assert url_info.url == "http://cdn.example.com/images/foo.jpg"
-    assert url_info.file_path == "./foo/foo.jpg"
-    assert url_info.file_content == "http://cdn.example.com/images/foo.jpg".encode(
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    command = commands[0]
+    assert isinstance(command, SaveFileContentCommand)
+    assert command.file_path == "foo/foo.jpg"
+    assert command.file_content == "http://cdn.example.com/images/foo.jpg".encode(
         "utf-32"
     )
-    url_info = url_infos[1]
-    assert isinstance(url_info, FileContentUrlInfo)
-    assert url_info.url == "http://cdn.example.com/images/bar.jpg"
-    assert url_info.file_path == "./foo/bar.jpg"
-    assert url_info.file_content == "http://cdn.example.com/images/bar.jpg".encode(
+    command = commands[1]
+    assert isinstance(command, SaveFileContentCommand)
+    assert command.file_path == "foo/bar.jpg"
+    assert command.file_content == "http://cdn.example.com/images/bar.jpg".encode(
         "utf-32"
     )
 
 
-def test_get_url_infos_assert_content() -> None:
+def test_get_url_commands_assert_content() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -862,12 +878,12 @@ def test_get_url_infos_assert_content() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    url_infos = list(config.get_url_infos(res))
-    assert len(url_infos) == 2
-    url_info = url_infos[0]
-    assert isinstance(url_info, DownloadUrlInfo)
-    url_info = url_infos[1]
-    assert isinstance(url_info, DownloadUrlInfo)
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 2
+    command = commands[0]
+    assert isinstance(command, DownloadUrlCommand)
+    command = commands[1]
+    assert isinstance(command, DownloadUrlCommand)
 
     class ConfDef2:
         start_url = "http://example.com/"
@@ -890,7 +906,7 @@ def test_get_url_infos_assert_content() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(AssertionError):
-        config.get_url_infos(res)
+        config.get_url_commands(res)
 
     class ConfDef3:
         start_url = "http://example.com/"
@@ -915,7 +931,7 @@ def test_get_url_infos_assert_content() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    config.get_url_infos(res)
+    config.get_url_commands(res)
 
     class ConfDef4:
         start_url = "http://example.com/"
@@ -938,7 +954,7 @@ def test_get_url_infos_assert_content() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(AssertionError):
-        config.get_url_infos(res)
+        config.get_url_commands(res)
 
 
 def test_get_links() -> None:

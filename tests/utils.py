@@ -1,5 +1,5 @@
 from scrapy.http import Response, HtmlResponse, Request
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Dict
 from pathlib import Path
 from scrapy.settings import Settings
 from media_scrapy import settings as setting_definitions
@@ -24,7 +24,9 @@ def fake_response(
     return response
 
 
-def fake_spider(tmpdir: Path) -> MainSpider:
+def fake_spider(
+    tmpdir: Path, additional_settings: Optional[Dict[str, Any]] = None
+) -> MainSpider:
     class SiteConfigDef:
         start_url = "http://example.com/"
         save_dir = str(Path(tmpdir))
@@ -32,6 +34,8 @@ def fake_spider(tmpdir: Path) -> MainSpider:
 
     settings = Settings()
     settings.setmodule(setting_definitions, priority="project")
+    if additional_settings is not None:
+        settings.setdict(additional_settings, priority="cmdline")
     spider = MainSpider(siteconf=SiteConfigDef)
     spider.settings = settings
 

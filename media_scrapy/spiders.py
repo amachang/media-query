@@ -12,11 +12,11 @@ from media_scrapy.errors import MediaScrapyError
 from media_scrapy.conf import (
     SiteConfigDefinition,
     SiteConfig,
-    DownloadUrlInfo,
-    FileContentUrlInfo,
-    ParseUrlInfo,
+    DownloadUrlCommand,
+    SaveFileContentCommand,
+    RequestUrlCommand,
 )
-from media_scrapy.items import MediaFiles
+from media_scrapy.items import DownloadUrlItem, SaveFileContentItem
 from typeguard import typechecked
 
 
@@ -112,34 +112,34 @@ class MainSpider(scrapy.Spider):
             meta={"structure_path": [], "file_path": []},
         )
 
-    def parse(self, res: Response) -> Iterator[Union[Request, MediaFiles]]:
-        url_infos = self.config.get_url_infos(res)
+    def parse(
+        self, res: Response
+    ) -> Iterator[Union[Request, SaveFileContentItem, DownloadUrlItem]]:
+        commands = self.config.get_url_commands(res)
 
-        file_urls: List[str] = []
-        file_contents: List[Optional[bytes]] = []
-        file_paths: List[str] = []
-        download_url_seen = set()
-        for url_info in url_infos:
-            url = url_info.url
-            if isinstance(url_info, FileContentUrlInfo):
-                file_urls.append(url)
-                file_contents.append(url_info.file_content)
-                file_paths.append(path.join(self.config.save_dir, url_info.file_path))
-            elif isinstance(url_info, DownloadUrlInfo):
-                if url in download_url_seen:
-                    continue
-                download_url_seen.add(url)
-                file_urls.append(url)
-                file_contents.append(None)
-                file_paths.append(path.join(self.config.save_dir, url_info.file_path))
-            elif isinstance(url_info, ParseUrlInfo):
-                yield Request(url, callback=self.parse, meta={"url_info": url_info})
+        for command in commands:
+            if isinstance(command, SaveFileContentCommand):
+                yield SaveFileContentItem(
+                    file_content=command.file_content,
+                    file_path=path.abspath(
+                        path.join(self.config.save_dir, command.file_path)
+                    ),
+                )
+
+            elif isinstance(command, DownloadUrlCommand):
+                yield DownloadUrlItem(
+                    url=command.url,
+                    file_path=path.abspath(
+                        path.join(self.config.save_dir, command.file_path)
+                    ),
+                )
+
+            elif isinstance(command, RequestUrlCommand):
+                yield Request(
+                    command.url_info.url,
+                    callback=self.parse,
+                    meta={"url_info": command.url_info},
+                )
+
             else:
                 assert False
-
-        file_paths = [path.abspath(file_path) for file_path in file_paths]
-
-        if 0 < len(file_urls):
-            yield MediaFiles(
-                file_urls=file_urls, file_contents=file_contents, file_paths=file_paths
-            )

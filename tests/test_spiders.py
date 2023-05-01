@@ -5,7 +5,7 @@ from .utils import fake_spider, fake_response
 from pathlib import Path
 from media_scrapy.spiders import *
 from media_scrapy.errors import MediaScrapyError
-from media_scrapy.items import MediaFiles
+from media_scrapy.items import DownloadUrlItem, SaveFileContentItem
 from scrapy.http import Request, FormRequest
 from typeguard import TypeCheckError
 
@@ -139,7 +139,7 @@ def test_main_spider_parse() -> None:
     assert a_req.callback == spider.parse
     assert a_req.url == "http://example.com/aaa_dir"
     assert a_req.meta["url_info"].structure_path == [0, 0]
-    assert a_req.meta["url_info"].file_path == "."
+    assert a_req.meta["url_info"].file_path == ""
 
     a_res = fake_response(
         request=a_req,
@@ -153,7 +153,7 @@ def test_main_spider_parse() -> None:
     assert b_req.callback == spider.parse
     assert b_req.url == "http://example.com/bbb_dir"
     assert b_req.meta["url_info"].structure_path == [0, 0]
-    assert b_req.meta["url_info"].file_path == "."
+    assert b_req.meta["url_info"].file_path == ""
 
     b_res = fake_response(
         request=b_req,
@@ -168,67 +168,28 @@ def test_main_spider_parse() -> None:
     assert a_req.callback == spider.parse
     assert a_req.url == "http://example.com/bbb_dir/noname_dir"
     assert a_req.meta["url_info"].structure_path == [0, 0, 0]
-    assert a_req.meta["url_info"].file_path == path.join(".", "foo")
+    assert a_req.meta["url_info"].file_path == "foo"
 
     assert isinstance(b_req, Request)
     assert b_req.callback == spider.parse
     assert b_req.url == "http://example.com/bbb_dir/noname_dir"
     assert b_req.meta["url_info"].structure_path == [0, 0, 0]
-    assert b_req.meta["url_info"].file_path == path.join(".", "foo")
+    assert b_req.meta["url_info"].file_path == "foo"
 
     res = fake_response(
         request=a_req,
         body=b"<a href='/files/aaa.txt'>link1</a><a href='/files/bbb.txt'>link2</a><a href='/files/ccc.txt'>link3</a>",
     )
     results = list(spider.parse(res))
-    assert len(results) == 1
-    item = results[0]
-    assert isinstance(item, MediaFiles)
-    assert item["file_urls"] == [
+    assert len(results) == 3
+    assert all(isinstance(item, DownloadUrlItem) for item in results)
+    assert [item["url"] for item in results] == [
         "http://example.com/files/aaa.txt",
         "http://example.com/files/bbb.txt",
         "http://example.com/files/ccc.txt",
     ]
-    assert item["file_paths"] == [
+    assert [item["file_path"] for item in results] == [
         "/tmp/foo/aaa.txt",
         "/tmp/foo/bbb.txt",
         "/tmp/foo/ccc.txt",
-    ]
-    assert item["file_contents"] == [None, None, None]
-
-
-def test_main_spider_parse_duplicated_urls() -> None:
-    class SiteConfigDef:
-        start_url = "http://example.com/"
-        save_dir = "/tmp"
-        structure = [
-            {
-                "url": r"http://example\.com/",
-            },
-            {
-                "url": r"http://example\.com/files/(\w+\.txt)",
-                "file_path": r"\g<1>",
-            },
-        ]
-
-    spider = MainSpider(siteconf=SiteConfigDef)
-
-    res = fake_response(
-        body=b"""
-        <a href='/files/aaa.txt'>foo</a>
-        <a href='/files/aaa.txt'>bar</a>
-        <a href='/files/bbb.txt'>baz</a>
-    """
-    )
-    results = list(spider.parse(res))
-    assert len(results) == 1
-    item = results[0]
-    assert isinstance(item, MediaFiles)
-    assert item["file_urls"] == [
-        "http://example.com/files/aaa.txt",
-        "http://example.com/files/bbb.txt",
-    ]
-    assert item["file_paths"] == [
-        "/tmp/aaa.txt",
-        "/tmp/bbb.txt",
     ]

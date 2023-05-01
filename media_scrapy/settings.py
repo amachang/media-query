@@ -12,9 +12,11 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # COOKIES_DEBUG = True
 
 ITEM_PIPELINES = {
-    "media_scrapy.pipelines.DropUnneededForDownloadMediaFilesPipeline": 100,
-    "scrapy.pipelines.files.FilesPipeline": 200,
-    "media_scrapy.pipelines.SaveDownloadedMediaFilesPipeline": 300,
+    "media_scrapy.pipelines.DropUnneededItemPipeline": 100,
+    "media_scrapy.pipelines.SaveFileContentPipeline": 200,
+    "media_scrapy.pipelines.PrepareItemForFilesPipelines": 300,
+    "scrapy.pipelines.files.FilesPipeline": 400,
+    "media_scrapy.pipelines.SaveDownloadedFilePipeline": 500,
 }
 
 FILES_STORE = path.join(gettempdir(), "media_scrapy")
