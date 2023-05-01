@@ -74,7 +74,10 @@ class SaveDownloadedFilePipeline:
                 save_file_path = original_item["file_path"]
 
                 downloaded_file_path = path.join(download_dir, file_info["path"])
-                os.makedirs(path.dirname(save_file_path), exist_ok=True)
+                assert path.exists(downloaded_file_path)
+                save_dir = path.dirname(save_file_path)
+                os.makedirs(save_dir, exist_ok=True)
+                assert path.isdir(save_dir)
                 shutil.move(downloaded_file_path, save_file_path)
 
                 logger.debug(

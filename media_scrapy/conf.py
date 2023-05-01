@@ -558,6 +558,7 @@ class StructureNode:
 
 def get_links(res: Response, content_node: SelectorList) -> List[Tuple[Selector, str]]:
     results = []
+    seen_urls = set()
     for link_el in content_node.xpath(".//*[@href | @src]"):
         node_name = link_el.xpath("name(.)").get()
         if node_name in {"a", "area", "link"} and "href" in link_el.attrib:
@@ -585,6 +586,9 @@ def get_links(res: Response, content_node: SelectorList) -> List[Tuple[Selector,
         else:
             assert False
         url = res.urljoin(url)
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         results.append((link_el, url))
     return results
 

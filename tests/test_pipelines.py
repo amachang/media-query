@@ -9,11 +9,13 @@ import pytest
 
 
 def make_saved_content_item(file_path: Path, content: bytes) -> SaveFileContentItem:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(content)
     return SaveFileContentItem(file_path=str(file_path), file_content=content)
 
 
 def make_saved_download_item(file_path: Path, url: str) -> DownloadUrlItem:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.touch()
     return DownloadUrlItem(
         url=url,
@@ -30,10 +32,10 @@ def test_whole_pipelines(tmpdir: Any) -> None:
     # save file path
     savedir = tmpdir.joinpath("save")
     savedir.mkdir(parents=True, exist_ok=True)
-    foo_path = savedir.joinpath("foo.txt")
-    bar_path = savedir.joinpath("bar.txt")
-    baz_path = savedir.joinpath("baz.txt")
-    baa_path = savedir.joinpath("baa.txt")
+    foo_path = savedir.joinpath("aaa/foo.txt")
+    bar_path = savedir.joinpath("bbb/bar.txt")
+    baz_path = savedir.joinpath("ccc/baz.txt")
+    baa_path = savedir.joinpath("ddd/baa.txt")
 
     # item creation
     other_item = Item()

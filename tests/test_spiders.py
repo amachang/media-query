@@ -161,20 +161,14 @@ def test_main_spider_parse() -> None:
     )
 
     results = list(spider.parse(b_res))
-    assert len(results) == 2
-    a_req, b_req = results
+    assert len(results) == 1
+    a_req = results[0]
 
     assert isinstance(a_req, Request)
     assert a_req.callback == spider.parse
     assert a_req.url == "http://example.com/bbb_dir/noname_dir"
     assert a_req.meta["url_info"].structure_path == [0, 0, 0]
     assert a_req.meta["url_info"].file_path == "foo"
-
-    assert isinstance(b_req, Request)
-    assert b_req.callback == spider.parse
-    assert b_req.url == "http://example.com/bbb_dir/noname_dir"
-    assert b_req.meta["url_info"].structure_path == [0, 0, 0]
-    assert b_req.meta["url_info"].file_path == "foo"
 
     res = fake_response(
         request=a_req,
