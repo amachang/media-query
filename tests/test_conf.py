@@ -128,6 +128,31 @@ def test_site_config_init_error() -> None:
         SiteConfig(ConfDef5())
 
 
+def test_get_url_commands_with_kwargs_url_matcher() -> None:
+    class ConfDef:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": lambda **kwargs: kwargs["url"] == "http://example.com/",
+                "file_path": "foo",
+            },
+            {
+                "url": lambda **kwargs: kwargs["url"] == "http://example.com/aaa.txt",
+                "file_path": "aaa.txt",
+            },
+        ]
+
+    config = SiteConfig(ConfDef())
+    res = fake_response(url="http://example.com/", body=b"<a href='aaa.txt'>aaa</a>")
+    commands = list(config.get_url_commands(res))
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, DownloadUrlCommand)
+    assert command.file_path == "foo/aaa.txt"
+    assert command.url == "http://example.com/aaa.txt"
+
+
 def test_get_url_commands_with_file_content() -> None:
     class ConfDef:
         start_url = "http://example.com/"
@@ -977,6 +1002,22 @@ def test_get_links() -> None:
         "http://example.com/ccc",
         "http://example.com/ddd",
     ]
+
+
+def test_callable_component() -> None:
+    fn = cast(Callable[..., str], lambda **kwargs: "foo")
+    component = CallableComponent(source_obj=fn, fn=fn, can_accept_response=True)
+    assert component(foo="foo", bar="bar") == "foo"
+    assert (
+        component.get_source_string()
+        == '    fn = cast(Callable[..., str], lambda **kwargs: "foo")\n'
+    )
+
+    fn = cast(Callable[..., str], lambda res: "foo")
+    component = CallableComponent(source_obj=fn, fn=fn, can_accept_response=True)
+    assert component.needs_response
+    component = CallableComponent(source_obj=fn, fn=fn, can_accept_response=False)
+    assert not component.needs_response
 
 
 def test_accepts_all_named_args() -> None:

@@ -318,7 +318,6 @@ class RequestUrlCommand(UrlCommand):
 U = TypeVar("U")
 
 
-@typechecked
 class CallableComponent(Generic[U]):
     source_obj: Any
     fn: Callable[..., Optional[U]]
@@ -326,6 +325,7 @@ class CallableComponent(Generic[U]):
     acceptable_named_args: List[str]
     needs_response: bool
 
+    @typechecked
     def __init__(
         self,
         source_obj: Any,
@@ -340,7 +340,13 @@ class CallableComponent(Generic[U]):
             arg in self.acceptable_named_args for arg in ["res", "content_node"]
         )
 
+    # type not checked
+    # https://github.com/agronholm/typeguard/issues/332
     def __call__(self, *args: Any, **kwargs: Any) -> U:
+        if len(args) == 1 and len(kwargs) == 0 and isinstance(args[0], UrlInfo):
+            url_info = args[0]
+            kwargs = vars(url_info)
+
         result: Optional[U]
         if self.accepts_all_named_args:
             result = self.fn(**kwargs)
@@ -355,6 +361,7 @@ class CallableComponent(Generic[U]):
             )
         return result
 
+    @typechecked
     def get_source_string(self) -> str:
         return get_source_string(self.source_obj)
 
@@ -455,9 +462,10 @@ class StructureNode:
     def create_response_url_info(
         self, url_info: UrlInfo, res: Response
     ) -> ResponseUrlInfo:
-        res_url_info = ResponseUrlInfo(
-            url_info, res, self.get_content_node(url_info, res)
-        )
+        res_url_info = ResponseUrlInfo(url_info, res, SelectorList([res.selector]))
+        content_node = self.get_content_node_if_available(res_url_info)
+        if content_node is not None:
+            res_url_info.content_node = content_node
         file_path_component = self.get_file_path_component_after_response(res_url_info)
         if file_path_component is not None:
             res_url_info.add_file_path_component(file_path_component)
@@ -477,23 +485,18 @@ class StructureNode:
 
     def convert_url(self, url_info: UrlInfo) -> str:
         if self.url_converter is not None:
-            converted_url = self.url_converter(
-                url=url_info.url, link_el=url_info.link_el, url_match=url_info.url_match
-            )
+            converted_url = self.url_converter(url_info)
             return converted_url
         else:
             return url_info.url
 
-    def get_content_node(self, url_info: UrlInfo, res: Response) -> SelectorList:
+    def get_content_node_if_available(
+        self, url_info: ResponseUrlInfo
+    ) -> Optional[SelectorList]:
         if self.content_node_extractor:
-            return self.content_node_extractor(
-                url=url_info.url,
-                link_el=url_info.link_el,
-                url_match=url_info.url_match,
-                res=res,
-            )
+            return self.content_node_extractor(url_info)
         else:
-            return SelectorList([res.selector])
+            return None
 
     def get_file_path_component_before_request(
         self, url_info: UrlInfo
@@ -502,9 +505,7 @@ class StructureNode:
             self.file_path_extractor is not None
             and not self.needs_response_for_file_path()
         ):
-            result = self.file_path_extractor(
-                url=url_info.url, link_el=url_info.link_el, url_match=url_info.url_match
-            )
+            result = self.file_path_extractor(url_info)
             assert isinstance(result, str)
             return result
         else:
@@ -515,13 +516,7 @@ class StructureNode:
     ) -> Optional[str]:
         if self.needs_response_for_file_path():
             assert self.file_path_extractor is not None
-            result = self.file_path_extractor(
-                url=url_info.url,
-                res=url_info.res,
-                content_node=url_info.content_node,
-                link_el=url_info.link_el,
-                url_match=url_info.url_match,
-            )
+            result = self.file_path_extractor(url_info)
             assert isinstance(result, str)
             return result
         else:
@@ -529,29 +524,15 @@ class StructureNode:
 
     def extract_file_content(self, url_info: ResponseUrlInfo) -> bytes:
         assert self.file_content_extractor is not None
-        return self.extract_file_content_impl(
-            {
-                "url": url_info.url,
-                "res": url_info.res,
-                "content_node": url_info.content_node,
-                "link_el": url_info.link_el,
-                "url_match": url_info.url_match,
-            }
-        )
+        return self.extract_file_content_impl(url_info)
 
     def extract_file_content_without_response(self, url_info: UrlInfo) -> bytes:
         assert self.file_content_extractor is not None
-        return self.extract_file_content_impl(
-            {
-                "url": url_info.url,
-                "link_el": url_info.link_el,
-                "url_match": url_info.url_match,
-            }
-        )
+        return self.extract_file_content_impl(url_info)
 
-    def extract_file_content_impl(self, kwargs: Dict[str, Any]) -> bytes:
+    def extract_file_content_impl(self, url_info: UrlInfo) -> bytes:
         assert self.file_content_extractor is not None
-        file_content = self.file_content_extractor(**kwargs)
+        file_content = self.file_content_extractor(url_info)
         if isinstance(file_content, str):
             return file_content.encode("utf-8")
         else:
@@ -560,20 +541,7 @@ class StructureNode:
 
     def assert_content(self, url_info: ResponseUrlInfo) -> None:
         if self.assertion_matcher is not None:
-            kwargs = {
-                "url": url_info.url,
-                "res": url_info.res,
-                "content_node": url_info.content_node,
-                "link_el": url_info.link_el,
-                "url_match": url_info.url_match,
-            }
-            self.assertion_matcher(
-                url=url_info.url,
-                res=url_info.res,
-                content_node=url_info.content_node,
-                link_el=url_info.link_el,
-                url_match=url_info.url_match,
-            )
+            self.assertion_matcher(url_info)
 
     def check(self) -> None:
         if not self.is_leaf() and self.file_content_extractor is not None:
@@ -791,7 +759,7 @@ class UrlMatcherSchema(CallableComponentSchemaBase[Union[bool, re.Match]]):
             callable_definition = self.ensure_callable_signature(definition, {"url"})
 
             def url_matcher(url: str) -> Union[bool, re.Match]:
-                result = callable_definition(url)
+                result = callable_definition(url=url)
                 if result is None:
                     return False
                 else:
