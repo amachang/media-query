@@ -92,7 +92,7 @@ def test_whole_pipelines(tmpdir: Any) -> None:
     assert files_item["file_urls"] == [unsaved_download_item["url"]]
 
     # emulate download
-    files_item["files"] = ["downloaded.txt"]
+    files_item["files"] = [{"path": "downloaded.txt", "status": "downloaded"}]
     tmp_downloaded_path = tmpdir.joinpath("downloaded.txt")
     tmp_downloaded_path.write_bytes(b"baa")
     assert tmp_downloaded_path.exists()

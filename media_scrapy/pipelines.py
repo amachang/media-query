@@ -65,21 +65,21 @@ class SaveDownloadedFilePipeline:
     def process_item(self, item: Item, spider: Spider) -> Item:
         if isinstance(item, ScrapyFilesPipelineItem):
             download_dir = spider.settings.get("FILES_STORE")
-            rel_file_path_list = item["files"]
-            assert len(rel_file_path_list) == 1
-            rel_file_path = rel_file_path_list[0]
+            file_info_list = item["files"]
+            assert len(file_info_list) == 1
+            file_info = file_info_list[0]
+            if file_info["status"] == "downloaded":
+                original_item = item["original_item"]
+                assert isinstance(original_item, DownloadUrlItem)
+                save_file_path = original_item["file_path"]
 
-            original_item = item["original_item"]
-            assert isinstance(original_item, DownloadUrlItem)
-            save_file_path = original_item["file_path"]
+                downloaded_file_path = path.join(download_dir, file_info["path"])
+                os.makedirs(path.dirname(save_file_path), exist_ok=True)
+                shutil.move(downloaded_file_path, save_file_path)
 
-            downloaded_file_path = path.join(download_dir, rel_file_path)
-            os.makedirs(path.dirname(save_file_path), exist_ok=True)
-            shutil.move(downloaded_file_path, save_file_path)
-
-            logger.debug(
-                f"Downloaded file moved: {downloaded_file_path} -> {save_file_path}"
-            )
+                logger.debug(
+                    f"Downloaded file moved: {downloaded_file_path} -> {save_file_path}"
+                )
             return original_item
         else:
             return item
