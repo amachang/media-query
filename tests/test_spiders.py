@@ -187,3 +187,30 @@ def test_main_spider_parse() -> None:
         "/tmp/foo/bbb.txt",
         "/tmp/foo/ccc.txt",
     ]
+
+
+def test_get_first_request() -> None:
+    class SiteConfigDef:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": r"http://example\.com/",
+            },
+            {
+                "url": r"http://example\.com/aaa",
+            },
+        ]
+
+    spider = MainSpider(siteconf=SiteConfigDef)
+    request = spider.get_first_request()
+    assert request.url == "http://example.com/"
+    assert request.callback == spider.parse
+    assert request.dont_filter == True
+
+    spider = MainSpider(
+        siteconf=SiteConfigDef, debug_target_url="http://example.com/aaa"
+    )
+    request = spider.get_first_request()
+    assert request.url == "http://example.com/aaa"
+    assert request.callback == spider.debug_response

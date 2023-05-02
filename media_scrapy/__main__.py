@@ -16,10 +16,12 @@ from typeguard import typechecked
 class Args(Tap):
     site_config: Path
     verbose: bool = False
+    check_url: Optional[str] = None
 
     def configure(self) -> None:
         self.add_argument("-c", "--site-config", required=True)
         self.add_argument("-v", "--verbose", action="store_true", required=False)
+        self.add_argument("-u", "--check-url", type=str, required=False)
 
 
 @typechecked
@@ -34,7 +36,9 @@ def main(args: Args) -> None:
         priority="cmdline",
     )
     crawler = CrawlerRunner(settings)
-    deferred = crawler.crawl(MainSpider, siteconf=args.site_config)
+    deferred = crawler.crawl(
+        MainSpider, siteconf=args.site_config, debug_target_url=args.check_url
+    )
 
     finished = False
     failure = None

@@ -10,6 +10,7 @@ setup(
         "typed-argument-parser~=1.8.0",
         "typeguard~=3.0.2",
         "personal-xpath-functions@git+https://github.com/amachang/personal-xpath-functions@main",
+        "ipython~=8.12.1",
     ],
     author="Hitoshi Amano",
     author_email="seijro@gmail.com",

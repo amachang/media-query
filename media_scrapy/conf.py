@@ -31,6 +31,7 @@ from schema import Schema, Or, SchemaError, Optional as SchemaOptional
 from typeguard import typechecked, check_type, TypeCheckError
 import personal_xpath_functions
 from lxml.etree import XPath, XPathSyntaxError
+from IPython import start_ipython
 
 
 @typechecked
@@ -52,9 +53,23 @@ class SiteConfig:
         self.start_url = Schema(str).validate(conf_def.start_url)
 
         if hasattr(conf_def, "login"):
-            login_def = Schema({"url": str, "formdata": dict}).validate(conf_def.login)
+            login_def = conf_def.login
+            if isinstance(login_def, dict):
+                login_def = Schema(
+                    {"url": str, SchemaOptional("formdata"): dict}
+                ).validate(login_def)
+                if "formdata" in login_def:
+                    login_formdata = login_def["formdata"]
+                else:
+                    login_formdata = None
+                login_url = login_def["url"]
+            elif isinstance(login_def, str):
+                login_url = login_def
+                login_formdata = None
+            else:
+                raise MediaScrapyError(error_message("Invalid login info", login_def))
+            self.login = LoginConfig(login_url, login_formdata)
             self.needs_login = True
-            self.login = LoginConfig(login_def["url"], login_def["formdata"])
         else:
             self.needs_login = False
 
@@ -64,16 +79,53 @@ class SiteConfig:
         url_info = UrlInfo(self.start_url)
         return RequestUrlCommand(url_info=url_info)
 
+    def get_simulated_command_for_url(self, url: str) -> "RequestUrlCommand":
+        url_info_list = self.root_structure_node.get_simulated_url_info_list(url)
+        if 0 == len(url_info_list):
+            raise MediaScrapyError(error_message("No structure matched for url", url))
+        elif 1 < len(url_info_list):
+            structure_node_list = [
+                self.root_structure_node.get_node_by_path(url_info.structure_path)
+                for url_info in url_info_list
+            ]
+            raise MediaScrapyError(
+                error_message_for_list(
+                    f"Multiple structures matched for {url} (currently not supported)",
+                    structure_node_list,
+                )
+            )
+        else:
+            assert 1 == len(url_info_list)
+            url_info = url_info_list[0]
+            return RequestUrlCommand(url_info=url_info)
+
+    def debug_response(self, res: Response, req_url_info: "UrlInfo") -> None:
+        url_info, structure_node = self.get_response_url_info_and_structure_node(
+            res, req_url_info
+        )
+        commands = self.get_url_commands_impl(url_info, structure_node)
+        start_ipython(
+            argv=[],
+            user_ns={
+                **vars(url_info),
+                "url_info": url_info,
+                "structure_node": structure_node,
+                "commands": commands,
+                "get_links": lambda: get_links(url_info.res, url_info.content_node),
+            },
+        )
+
     def get_url_commands(
         self, res: Response, req_url_info: "UrlInfo"
     ) -> List["UrlCommand"]:
-        structure_node = self.root_structure_node.get_node_by_path(
-            req_url_info.structure_path
+        url_info, structure_node = self.get_response_url_info_and_structure_node(
+            res, req_url_info
         )
-        url_info = structure_node.create_response_url_info(req_url_info, res)
+        return self.get_url_commands_impl(url_info, structure_node)
 
-        assert isinstance(url_info, ResponseUrlInfo)
-
+    def get_url_commands_impl(
+        self, url_info: "ResponseUrlInfo", structure_node: "StructureNode"
+    ) -> List["UrlCommand"]:
         if structure_node.is_leaf():
             if structure_node.needs_response_for_file_content():
                 file_content = structure_node.extract_file_content(url_info)
@@ -169,23 +221,33 @@ class SiteConfig:
                             commands.append(RequestUrlCommand(url_info=next_url_info))
 
         if not forwardable_structure_node_found and structure_node.is_root:
-            url_matcher_sources = [
-                f"{index}: <no url matcher in definition>\n"
-                if node.url_matcher is None
-                else f"{index}: {node.url_matcher.get_source_string()}"
-                for index, node in enumerate(structure_node.children)
+            url_matchers = [
+                node.url_matcher for index, node in enumerate(structure_node.children)
             ]
-            url_matcher_sources_text = "".join(url_matcher_sources)
             raise MediaScrapyError(
-                error_message(
-                    "Start url doesn't much any url matchers", url_matcher_sources_text
+                error_message_for_list(
+                    "Start url doesn't much any url matchers", url_matchers
                 )
             )
 
         return commands
 
+    def get_response_url_info_and_structure_node(
+        self, res: Response, url_info: "UrlInfo"
+    ) -> Tuple["ResponseUrlInfo", "StructureNode"]:
+        structure_node = self.root_structure_node.get_node_by_path(
+            url_info.structure_path
+        )
+        return (structure_node.create_response_url_info(url_info, res), structure_node)
 
-LoginConfig = namedtuple("LoginConfig", ["url", "formdata"])
+
+class LoginConfig:
+    url: str
+    formdata: Optional[Dict[str, str]]
+
+    def __init__(self, url: str, formdata: Optional[Dict[str, str]] = None):
+        self.url = url
+        self.formdata = formdata
 
 
 @typechecked
@@ -209,8 +271,8 @@ class UrlInfo:
 
         if link_el is None:
             self.link_el = Selector(
-                f"<a href='{html.escape(url)}'>{html.escape(url)}</a>"
-            )
+                f"<body><a href='{html.escape(url)}'>{html.escape(url)}</a></body>"
+            ).xpath("//a")[0]
         else:
             self.link_el = link_el
 
@@ -227,10 +289,15 @@ class UrlInfo:
             self.structure_path = structure_path
 
     def add_file_path_component(self, file_path_component: str) -> None:
-        if len(self.file_path) == 0:
-            self.file_path = file_path_component
+        self.file_path = self.join_file_path(self.file_path, file_path_component)
+
+    @staticmethod
+    def join_file_path(file_path: str, file_path_component: str) -> str:
+        if len(file_path) == 0:
+            file_path = file_path_component
         else:
-            self.file_path = path.join(self.file_path, file_path_component)
+            file_path = path.join(file_path, file_path_component)
+        return file_path
 
     def drop_last_file_path_component(self) -> None:
         assert 0 < len(self.file_path)
@@ -413,6 +480,12 @@ class StructureNode:
         else:
             return self.file_path_extractor.needs_response
 
+    def can_get_file_path_before_request(self) -> bool:
+        if self.file_path_extractor is None:
+            return False
+        else:
+            return not self.file_path_extractor.needs_response
+
     def needs_response_for_file_content(self) -> bool:
         if self.file_content_extractor is None:
             return False
@@ -492,13 +565,22 @@ class StructureNode:
         else:
             return None
 
+    def get_tentative_file_path_component(self) -> str:
+        if self.file_path_extractor is not None:
+            if isinstance(self.file_path_extractor.source_obj, str):
+                return self.file_path_extractor.source_obj
+            elif callable(self.file_path_extractor.source_obj):
+                try:
+                    return self.file_path_extractor()
+                except:
+                    pass
+        return "__unknown__"
+
     def get_file_path_component_before_request(
         self, url_info: UrlInfo
     ) -> Optional[str]:
-        if (
-            self.file_path_extractor is not None
-            and not self.needs_response_for_file_path()
-        ):
+        if self.can_get_file_path_before_request():
+            assert self.file_path_extractor is not None
             result = self.file_path_extractor(url_info)
             assert isinstance(result, str)
             return result
@@ -536,6 +618,37 @@ class StructureNode:
     def assert_content(self, url_info: ResponseUrlInfo) -> None:
         if self.assertion_matcher is not None:
             self.assertion_matcher(url_info)
+
+    def get_simulated_url_info_list(self, url: str) -> List[UrlInfo]:
+        return self.get_simulated_url_info_list_impl(url, "", [])
+
+    def get_simulated_url_info_list_impl(
+        self, url: str, file_path: str, structure_path: List[int]
+    ) -> List[UrlInfo]:
+        url_info_list = []
+        is_matched, url_match = self.match_url(url)
+        if is_matched:
+            url_info = UrlInfo(
+                url=url,
+                url_match=url_match,
+                file_path=file_path,
+                structure_path=structure_path,
+            )
+            self.update_url_info_before_request(url_info)
+            url_info_list.append(url_info)
+
+        if self.has_file_path_component():
+            file_path = UrlInfo.join_file_path(
+                file_path, self.get_tentative_file_path_component()
+            )
+
+        for index, node in enumerate(self.children):
+            child_url_info_list = node.get_simulated_url_info_list_impl(
+                url, file_path, structure_path + [index]
+            )
+            url_info_list.extend(child_url_info_list)
+
+        return url_info_list
 
     def check(self) -> None:
         if not self.is_leaf() and self.file_content_extractor is not None:
@@ -996,6 +1109,16 @@ def error_message(message: str, source_obj: Any) -> str:
         source_string = get_source_string(source_obj)
 
     return message + ":\n" + indent(source_string, "    ")
+
+
+@typechecked
+def error_message_for_list(message: str, source_objs: List[Any]) -> str:
+    sources = [
+        f"{index}: <none>\n" if obj is None else f"{index}: {get_source_string(obj)}"
+        for index, obj in enumerate(source_objs)
+    ]
+    sources_text = "".join(sources)
+    return error_message(message, sources_text)
 
 
 @typechecked

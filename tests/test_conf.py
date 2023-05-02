@@ -982,6 +982,124 @@ def test_get_url_commands_assert_content() -> None:
         config.get_url_commands(res, res.meta["url_info"])
 
 
+def test_get_simulated_command_for_url() -> None:
+    class ConfDef1:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": r"http://example\.com/",
+            },
+            {
+                "url": r"http://example\.com/aaa/(\w+)",
+            },
+            {
+                "url": r"http://example\.com/aaa/(\w+)",  # duplicated
+            },
+        ]
+
+    config = SiteConfig(ConfDef1())
+    command = config.get_simulated_command_for_url("http://example.com/")
+    url_info = command.url_info
+    assert url_info.url == "http://example.com/"
+    assert url_info.link_el.attrib["href"] == "http://example.com/"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/"
+    assert url_info.file_path == ""
+    assert url_info.structure_path == [0]
+
+    with pytest.raises(MediaScrapyError):
+        config.get_simulated_command_for_url("http://example.com/aaa/bbb")
+
+    with pytest.raises(MediaScrapyError):
+        config.get_simulated_command_for_url("http://example.com/not_matched")
+
+
+def test_structure_ndoe_get_simulated_url_info_list() -> None:
+    class ConfDef1:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": r"http://example\.com/",
+                "file_path": "foo",
+            },
+            {
+                "url": r"http://example\.com/(\w+)",
+                "file_path": lambda url_match: url_match.group(1),
+            },
+            {
+                "url": r"http://example\.com/aaa/(\w+)",
+                "file_path": r"bar-\g<1>",
+            },
+            [
+                [
+                    {
+                        "url": r"http://example\.com/aaa/(\w+)",  # duplicated
+                        "file_path": lambda: "baz",
+                    },
+                ],
+                [
+                    {
+                        "url": r"http://example\.com/aaa/(\w+)",  # duplicated
+                        "file_path": lambda res: "baa",
+                    },
+                ],
+            ],
+        ]
+
+    config = SiteConfig(ConfDef1())
+    url_info_list = config.root_structure_node.get_simulated_url_info_list(
+        "http://example.com/"
+    )
+    assert len(url_info_list) == 1
+    url_info = url_info_list[0]
+    assert url_info.url == "http://example.com/"
+    assert url_info.link_el.attrib["href"] == "http://example.com/"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/"
+    assert url_info.file_path == "foo"
+    assert url_info.structure_path == [0]
+
+    url_info_list = config.root_structure_node.get_simulated_url_info_list(
+        "http://example.com/aaa"
+    )
+    assert len(url_info_list) == 1
+    url_info = url_info_list[0]
+    assert url_info.url == "http://example.com/aaa"
+    assert url_info.link_el.attrib["href"] == "http://example.com/aaa"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/aaa"
+    assert url_info.file_path == "foo/aaa"
+    assert url_info.structure_path == [0, 0]
+
+    url_info_list = config.root_structure_node.get_simulated_url_info_list(
+        "http://example.com/aaa/bbb"
+    )
+    assert len(url_info_list) == 3
+    url_info = url_info_list[0]
+    assert url_info.url == "http://example.com/aaa/bbb"
+    assert url_info.link_el.attrib["href"] == "http://example.com/aaa/bbb"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/aaa/bbb"
+    assert url_info.file_path == "foo/__unknown__/bar-bbb"
+    assert url_info.structure_path == [0, 0, 0]
+    url_info = url_info_list[1]
+    assert url_info.url == "http://example.com/aaa/bbb"
+    assert url_info.link_el.attrib["href"] == "http://example.com/aaa/bbb"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/aaa/bbb"
+    assert url_info.file_path == r"foo/__unknown__/bar-\g<1>/baz"
+    assert url_info.structure_path == [0, 0, 0, 0]
+    url_info = url_info_list[2]
+    assert url_info.url == "http://example.com/aaa/bbb"
+    assert url_info.link_el.attrib["href"] == "http://example.com/aaa/bbb"
+    assert isinstance(url_info.url_match, re.Match)
+    assert url_info.url_match.group(0) == "http://example.com/aaa/bbb"
+    assert url_info.file_path == r"foo/__unknown__/bar-\g<1>"
+    assert url_info.structure_path == [0, 0, 0, 1]
+
+
 def test_get_links() -> None:
     res = fake_response(
         url="http://example.com/",
