@@ -16,8 +16,13 @@ def fake_response(
     if request is None:
         request = Request(url=url)
     assert request is not None
+
     if url_info is not None:
         request.meta["url_info"] = url_info
+
+    if "url_info" not in request.meta:
+        request.meta["url_info"] = UrlInfo(request.url)
+
     response = HtmlResponse(url=url, request=request, body=body)
     for key, value in request.meta.items():
         response.meta[key] = value

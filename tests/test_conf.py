@@ -145,7 +145,7 @@ def test_get_url_commands_with_kwargs_url_matcher() -> None:
 
     config = SiteConfig(ConfDef())
     res = fake_response(url="http://example.com/", body=b"<a href='aaa.txt'>aaa</a>")
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 1
     command = commands[0]
     assert isinstance(command, DownloadUrlCommand)
@@ -169,7 +169,7 @@ def test_get_url_commands_with_file_content() -> None:
     res = fake_response(
         url="http://example.com/", body=b"<p>foo</p> <p>bar</p> <div>baz</div>"
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 1
     command = commands[0]
     assert isinstance(command, SaveFileContentCommand)
@@ -218,7 +218,7 @@ def test_get_url_commands_with_paging_file_path_obtained_before_request() -> Non
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -246,7 +246,7 @@ def test_get_url_commands_with_paging_file_path_obtained_before_request() -> Non
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
         url_info=request_url_command.url_info,
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -295,7 +295,7 @@ def test_get_url_commands_with_paging_file_path_obtained_after_request() -> None
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -323,7 +323,7 @@ def test_get_url_commands_with_paging_file_path_obtained_after_request() -> None
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
         url_info=request_url_command.url_info,
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -394,7 +394,7 @@ def test_get_url_commands_with_paging_without_url_match() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a><a href="/?page=2">next</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -422,7 +422,7 @@ def test_get_url_commands_with_paging_without_url_match() -> None:
         body=b'<a href="/contents/aaa">aaa</a><a href="/contents/bbb">bbb</a><a href="/?page=3">next</a>',
         url_info=request_url_command.url_info,
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 3
     download_commands = [
         command for command in commands if isinstance(command, DownloadUrlCommand)
@@ -466,7 +466,7 @@ def test_get_url_commands_without_url_match_object() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -516,7 +516,7 @@ def test_get_url_commands_multiple_root() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -565,7 +565,7 @@ def test_get_url_commands_start_url_not_match_with_any_url_matcher() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(MediaScrapyError):
-        config.get_url_commands(res)
+        config.get_url_commands(res, res.meta["url_info"])
 
 
 def test_get_url_commands_using_as_url() -> None:
@@ -589,7 +589,7 @@ def test_get_url_commands_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -622,7 +622,7 @@ def test_get_url_commands_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 1
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -653,7 +653,7 @@ def test_get_url_commands_using_as_url() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -723,7 +723,7 @@ def test_get_url_commands_using_as_url() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(MediaScrapyError):
-        config.get_url_commands(res)
+        config.get_url_commands(res, res.meta["url_info"])
 
 
 def test_get_url_commands_specific_content_area() -> None:
@@ -761,7 +761,7 @@ def test_get_url_commands_specific_content_area() -> None:
         ]
 
     config = SiteConfig(ConfDef1())
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -810,7 +810,7 @@ def test_get_url_commands_specific_content_area() -> None:
         ]
 
     config = SiteConfig(ConfDef3())
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     assert all(isinstance(command, DownloadUrlCommand) for command in commands)
     download_commands = cast(List[DownloadUrlCommand], commands)
@@ -866,7 +866,7 @@ def test_get_url_commands_with_binary_file() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     command = commands[0]
     assert isinstance(command, SaveFileContentCommand)
@@ -903,7 +903,7 @@ def test_get_url_commands_assert_content() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    commands = list(config.get_url_commands(res))
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
     assert len(commands) == 2
     command = commands[0]
     assert isinstance(command, DownloadUrlCommand)
@@ -931,7 +931,7 @@ def test_get_url_commands_assert_content() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(AssertionError):
-        config.get_url_commands(res)
+        config.get_url_commands(res, res.meta["url_info"])
 
     class ConfDef3:
         start_url = "http://example.com/"
@@ -956,7 +956,7 @@ def test_get_url_commands_assert_content() -> None:
         url="http://example.com/",
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
-    config.get_url_commands(res)
+    config.get_url_commands(res, res.meta["url_info"])
 
     class ConfDef4:
         start_url = "http://example.com/"
@@ -979,7 +979,7 @@ def test_get_url_commands_assert_content() -> None:
         body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
     )
     with pytest.raises(AssertionError):
-        config.get_url_commands(res)
+        config.get_url_commands(res, res.meta["url_info"])
 
 
 def test_get_links() -> None:

@@ -7,7 +7,7 @@ from twisted.internet import reactor
 from twisted.python.failure import Failure
 from tap import Tap
 from scrapy.utils.log import configure_logging
-from typing import Any
+from typing import Any, Optional
 import traceback
 from typeguard import typechecked
 
@@ -18,8 +18,8 @@ class Args(Tap):
     verbose: bool = False
 
     def configure(self) -> None:
-        self.add_argument("-c", "--site_config")
-        self.add_argument("-v", "--verbose", action="store_true")
+        self.add_argument("-c", "--site-config", required=True)
+        self.add_argument("-v", "--verbose", action="store_true", required=False)
 
 
 @typechecked

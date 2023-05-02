@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Any, Union, Optional, Type, Iterator
+from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable
 from pathlib import Path
 import re
 from importlib.machinery import SourceFileLoader
@@ -24,7 +24,10 @@ from typeguard import typechecked
 class MainSpider(scrapy.Spider):
     name = "main"
 
-    def __init__(self, siteconf: Union[str, Path, Type[SiteConfigDefinition]]) -> None:
+    def __init__(
+        self,
+        siteconf: Union[str, Path, Type[SiteConfigDefinition]],
+    ) -> None:
         super().__init__(siteconf=siteconf)
 
         if inspect.isclass(siteconf):
@@ -86,15 +89,9 @@ class MainSpider(scrapy.Spider):
 
     def start_requests(self) -> Iterator[Request]:
         if self.config.needs_login:
-            callback = self.login
+            yield self.get_start_request(self.login)
         else:
-            callback = self.parse
-        yield Request(
-            self.config.start_url,
-            callback=callback,
-            dont_filter=True,
-            meta={"structure_path": [], "file_path": []},
-        )
+            yield self.get_start_request(self.parse)
 
     def login(self, res: Response) -> Iterator[Request]:
         assert self.config.needs_login
@@ -105,17 +102,21 @@ class MainSpider(scrapy.Spider):
         )
 
     def parse_login(self, res: Response) -> Iterator[Request]:
-        yield Request(
-            self.config.start_url,
-            callback=self.parse,
-            dont_filter=True,
-            meta={"structure_path": [], "file_path": []},
-        )
+        yield self.get_start_request(self.parse)
+
+    def get_start_request(
+        self,
+        callback: Callable[
+            [Response], Iterator[Union[Request, SaveFileContentItem, DownloadUrlItem]]
+        ],
+    ) -> Request:
+        command = self.config.get_start_command()
+        return self.create_request(command, callback)
 
     def parse(
         self, res: Response
     ) -> Iterator[Union[Request, SaveFileContentItem, DownloadUrlItem]]:
-        commands = self.config.get_url_commands(res)
+        commands = self.config.get_url_commands(res, res.meta["url_info"])
 
         for command in commands:
             if isinstance(command, SaveFileContentCommand):
@@ -135,11 +136,20 @@ class MainSpider(scrapy.Spider):
                 )
 
             elif isinstance(command, RequestUrlCommand):
-                yield Request(
-                    command.url_info.url,
-                    callback=self.parse,
-                    meta={"url_info": command.url_info},
-                )
+                yield self.create_request(command, self.parse)
 
             else:
                 assert False
+
+    def create_request(
+        self,
+        command: RequestUrlCommand,
+        callback: Callable[
+            [Response], Iterator[Union[Request, SaveFileContentItem, DownloadUrlItem]]
+        ],
+    ) -> Request:
+        return Request(
+            command.url_info.url,
+            callback=callback,
+            meta={"url_info": command.url_info},
+        )

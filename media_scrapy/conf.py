@@ -60,15 +60,11 @@ class SiteConfig:
 
         self.root_structure_node = parse_structure_list(conf_def.structure)
 
-    def get_url_commands(self, res: Response) -> List["UrlCommand"]:
-        if "url_info" not in res.meta:
-            url_info = UrlInfo(res.url)
-        else:
-            assert isinstance(res.meta["url_info"], UrlInfo)
-            url_info = res.meta["url_info"]
-        return self.get_url_commands_with_url_info(res, url_info)
+    def get_start_command(self) -> "RequestUrlCommand":
+        url_info = UrlInfo(self.start_url)
+        return RequestUrlCommand(url_info=url_info)
 
-    def get_url_commands_with_url_info(
+    def get_url_commands(
         self, res: Response, req_url_info: "UrlInfo"
     ) -> List["UrlCommand"]:
         structure_node = self.root_structure_node.get_node_by_path(
@@ -128,9 +124,7 @@ class SiteConfig:
 
                 next_structure_node.update_url_info_before_request(next_url_info)
 
-                sub_commands = self.get_url_commands_with_url_info(
-                    url_info.res, next_url_info
-                )
+                sub_commands = self.get_url_commands(url_info.res, next_url_info)
                 commands.extend(sub_commands)
             else:
                 for link_el, url in link_infos:
