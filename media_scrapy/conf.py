@@ -620,13 +620,22 @@ class StructureNode:
             self.assertion_matcher(url_info)
 
     def get_simulated_url_info_list(self, url: str) -> List[UrlInfo]:
-        return self.get_simulated_url_info_list_impl(url, "", [])
+        return self.get_simulated_url_info_list_impl(url, "", [], False, None)
 
     def get_simulated_url_info_list_impl(
-        self, url: str, file_path: str, structure_path: List[int]
+        self,
+        url: str,
+        file_path: str,
+        structure_path: List[int],
+        is_parent_matched: bool,
+        parent_url_match: Optional[re.Match],
     ) -> List[UrlInfo]:
         url_info_list = []
-        is_matched, url_match = self.match_url(url)
+        if self.needs_no_request():
+            is_matched = is_parent_matched
+            url_match = parent_url_match
+        else:
+            is_matched, url_match = self.match_url(url)
         if is_matched:
             url_info = UrlInfo(
                 url=url,
@@ -644,7 +653,7 @@ class StructureNode:
 
         for index, node in enumerate(self.children):
             child_url_info_list = node.get_simulated_url_info_list_impl(
-                url, file_path, structure_path + [index]
+                url, file_path, structure_path + [index], is_matched, url_match
             )
             url_info_list.extend(child_url_info_list)
 
@@ -661,6 +670,9 @@ class StructureNode:
 
         for child_node in self.children:
             child_node.check()
+
+    def get_source_string(self) -> str:
+        return get_source_string(self.source_obj)
 
 
 def get_links(res: Response, content_node: SelectorList) -> List[Tuple[Selector, str]]:
@@ -1101,12 +1113,7 @@ class AssertionMatcherSchema(CallableComponentSchemaBase[bool]):
 
 @typechecked
 def error_message(message: str, source_obj: Any) -> str:
-    if hasattr(source_obj, "get_source_string") and callable(
-        source_obj.get_source_string
-    ):
-        source_string = source_obj.get_source_string()
-    else:
-        source_string = get_source_string(source_obj)
+    source_string = get_source_string(source_obj)
 
     return message + ":\n" + indent(source_string, "    ")
 
@@ -1117,8 +1124,9 @@ def error_message_for_list(message: str, source_objs: List[Any]) -> str:
         f"{index}: <none>\n" if obj is None else f"{index}: {get_source_string(obj)}"
         for index, obj in enumerate(source_objs)
     ]
-    sources_text = "".join(sources)
-    return error_message(message, sources_text)
+    sources_string = "".join(sources)
+
+    return message + ":\n" + indent(sources_string, "    ")
 
 
 @typechecked
@@ -1155,10 +1163,94 @@ def get_named_parameter_objs(fn: Callable) -> List[inspect.Parameter]:
 
 @typechecked
 def get_source_string(source_obj: Any) -> str:
-    try:
-        source_string = f"{inspect.getsource(source_obj)}"
-    except:
-        source_string = f"{source_obj}\n"
+    if hasattr(source_obj, "get_source_string"):
+        source_string = cast(str, source_obj.get_source_string())
+        return source_string
 
-    assert re.search(r"\n$", source_string)
+    try:
+        source_lines, _ = inspect.getsourcelines(source_obj)
+    except:
+        source_lines = None
+
+    if source_lines is not None:
+        source_string = "".join(deindent(source_lines))
+        assert re.search(r"\n$", source_string)
+    else:
+        source_string = get_source_string_for_obj(source_obj, False) + "\n"
+
     return source_string
+
+
+@typechecked
+def get_source_string_for_obj(source_obj: Any, is_single_line_context: bool) -> str:
+    if is_single_line_context:
+        line_break = ""
+        indentation = ""
+    else:
+        line_break = "\n"
+        indentation = "    "
+
+    if source_obj is None:
+        return "None"
+    elif isinstance(source_obj, (int, float, bool, complex)):
+        source_string = f"{source_obj}"
+        assert is_single_line(source_string)
+        return source_string
+    elif isinstance(source_obj, str):
+        source_string = json.dumps(source_obj)
+        assert is_single_line(source_string)
+        return source_string
+    elif inspect.isfunction(source_obj):
+        return f"<function {source_obj.__name__} at {hex(id(source_obj))}>"
+    elif isinstance(source_obj, (set, list, tuple)):
+        lines = []
+        if isinstance(source_obj, set):
+            open_char, close_char, empty = ("{", "}", "set()")
+        elif isinstance(source_obj, list):
+            open_char, close_char, empty = ("[", "]", "[]")
+        else:
+            assert isinstance(source_obj, tuple)
+            open_char, close_char, empty = ("(", ")", "tuple()")
+        if len(source_obj) == 0:
+            return empty
+        lines.append(open_char)
+        for item in source_obj:
+            item_source_string = get_source_string_for_obj(item, is_single_line_context)
+            lines.append(indent(item_source_string, indentation) + ",")
+        lines.append(close_char)
+        return line_break.join(lines)
+    elif isinstance(source_obj, dict):
+        if len(source_obj) == 0:
+            return "{}"
+        lines = []
+        lines.append("{")
+        for key, item in source_obj.items():
+            key_source_string = get_source_string_for_obj(key, True)
+            item_source_string = get_source_string_for_obj(item, is_single_line_context)
+            lines.append(
+                indent(key_source_string + ": " + item_source_string, indentation) + ","
+            )
+        lines.append("}")
+        return line_break.join(lines)
+    else:
+        return f"<{source_obj.__class__.__name__} object at {hex(id(source_obj))}>"
+
+
+@typechecked
+def is_single_line(text: str) -> bool:
+    return not re.search(r"\n", text)
+
+
+@typechecked
+def deindent(source_lines: List[str]) -> List[str]:
+    # no consider tab
+    # i'm not familiar with offsite rules
+    nonempty_source_lines = [l for l in source_lines if not re.fullmatch(r" *", l)]
+    min_indent = min(
+        len(match.group(0))
+        for match in [re.match(r"^ +", l) for l in nonempty_source_lines]
+        if match is not None
+    )
+    deindented_source_lines = [l[min_indent:] for l in source_lines]
+    assert all(re.search(r"\n$", l) for l in deindented_source_lines)
+    return deindented_source_lines

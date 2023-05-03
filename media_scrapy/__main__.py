@@ -3,13 +3,18 @@ from scrapy.settings import Settings
 from scrapy.crawler import CrawlerRunner
 from media_scrapy import settings as setting_definitions
 from media_scrapy.spiders import MainSpider
-from twisted.internet import reactor
 from twisted.python.failure import Failure
 from tap import Tap
 from scrapy.utils.log import configure_logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 import traceback
 from typeguard import typechecked
+from twisted.internet.defer import Deferred
+import twisted.internet.reactor
+from twisted.internet.base import ReactorBase
+from twisted.internet.error import ReactorNotRunning
+
+reactor = cast(ReactorBase, twisted.internet.reactor)
 
 
 @typechecked
@@ -36,32 +41,33 @@ def main(args: Args) -> None:
         priority="cmdline",
     )
     crawler = CrawlerRunner(settings)
-    deferred = crawler.crawl(
+
+    d = crawler.crawl(
         MainSpider, siteconf=args.site_config, debug_target_url=args.check_url
     )
 
-    finished = False
-    failure = None
+    run_until_done(d)
 
-    def callback(result: Any) -> None:
-        nonlocal finished, failure
-        if isinstance(result, Failure):
-            failure = result
-        finished = True
 
+@typechecked
+def run_until_done(d: Deferred) -> None:
+    result = None
+
+    def callback(r: Any) -> None:
+        nonlocal result
+        result = r
         try:
-            assert hasattr(reactor, "stop")
             reactor.stop()
-        except:
+        except ReactorNotRunning:
             pass
 
-    deferred.addBoth(callback)
+    d.addBoth(callback)
 
-    if not finished:
-        assert hasattr(reactor, "run")
+    if not d.called:
         reactor.run()
 
-    if failure is not None:
+    if result is not None and isinstance(result, Failure):
+        failure = result
         if isinstance(failure.value, BaseException):
             traceback.print_exception(
                 type(failure.value), failure.value, tb=failure.getTracebackObject()

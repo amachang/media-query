@@ -1128,7 +1128,7 @@ def test_callable_component() -> None:
     assert component(foo="foo", bar="bar") == "foo"
     assert (
         component.get_source_string()
-        == '    fn = cast(Callable[..., str], lambda **kwargs: "foo")\n'
+        == 'fn = cast(Callable[..., str], lambda **kwargs: "foo")\n'
     )
 
     fn = cast(Callable[..., str], lambda res: "foo")
