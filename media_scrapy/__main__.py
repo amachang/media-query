@@ -10,9 +10,16 @@ from typing import Any, Optional, cast
 import traceback
 from typeguard import typechecked
 from twisted.internet.defer import Deferred
-import twisted.internet.reactor
-from twisted.internet.base import ReactorBase
 from twisted.internet.error import ReactorNotRunning
+
+import asyncio
+from twisted.internet import asyncioreactor
+from twisted.internet.base import ReactorBase
+from scrapy.utils.reactor import install_reactor
+
+install_reactor("twisted.internet.asyncioreactor.AsyncioSelectorReactor")
+
+import twisted.internet.reactor
 
 reactor = cast(ReactorBase, twisted.internet.reactor)
 
