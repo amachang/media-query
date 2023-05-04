@@ -69,10 +69,15 @@ def main(
 
 
 @typechecked
-def choose_structure_definitions(structure_target_list: List[str]) -> int:
-    # raise NotImplementedError()
-    return 0
+def choose_structure_definitions(structure_description_list: List[str]) -> int:
+    prompt_message = "Choose structure for debug\n"
+    structure_count = len(structure_description_list)
+    for index, description in enumerate(structure_description_list):
+        structure_number = index + 1
+        prompt_message += f"[{structure_number}] {description}"
 
+    choosed_number = cast(int, click.prompt(prompt_message, type=click.IntRange(1, structure_count)))
+    return choosed_number - 1
 
 @typechecked
 def start_debug_repl(user_ns: Dict[str, Any]) -> None:
