@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable
+from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable, Awaitable
 from pathlib import Path
 import re
 import inspect
@@ -124,13 +124,22 @@ class DebugSpider(SpiderBase):
         config: SiteConfig,
         debug_target_url: str,
         choose_structure_definitions_callback: Callable[[List[str]], int],
-        start_debug_callback: Callable[[Dict[str, Any]], None],
+        start_debug_callback: Callable[[Dict[str, Any]], Awaitable[None]],
     ) -> None:
         super().__init__(config)
         self.config = config
         self.debug_target_url = debug_target_url
         self.choose_structure_definitions = choose_structure_definitions_callback
         self.start_debug = start_debug_callback
+
+    def get_start_request_before_login(self) -> Request:
+        request = super().get_start_request_before_login()
+        self.logger.info(f"Requesting top page...: {request.url}")
+        return request
+
+    def login(self, res: Response) -> Iterator[Request]:
+        self.logger.info(f"Logging in...: {self.config.login.url}")
+        return super().login(res)
 
     def get_first_request(self) -> Request:
         command_candidates = self.config.get_simulated_command_candidates_for_url(
@@ -144,8 +153,9 @@ class DebugSpider(SpiderBase):
         )
         structure_desc, command = command_candidates[command_index]
 
+        self.logger.info(f"Requesting...: {command.url_info.url}")
         return self.get_request_for_command(command, self.parse, True)
 
-    def parse(self, res: Response) -> None:
+    async def parse(self, res: Response) -> None:
         debug_env = self.config.get_debug_environment(res, res.meta["url_info"])
-        self.start_debug(debug_env)
+        await self.start_debug(debug_env)

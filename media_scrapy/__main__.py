@@ -13,6 +13,8 @@ from twisted.internet.error import ReactorNotRunning
 from media_scrapy.conf import SiteConfig, SiteConfigDefinition
 from IPython import start_ipython
 import click
+from threading import Thread
+import functools
 
 import asyncio
 from twisted.internet import asyncioreactor
@@ -45,18 +47,25 @@ def main(
     configure_logging()
     settings = Settings()
     settings.setmodule(setting_definitions, priority="project")
-    settings.setdict(
-        {
-            "LOG_LEVEL": "DEBUG" if verbose else "INFO",
-        },
-        priority="cmdline",
-    )
     crawler = CrawlerRunner(settings)
-
     config = SiteConfig.create_by_definition(site_config_cls_or_path)
+
     if debug_target_url is None:
+        crawler.settings.setdict(
+            {
+                "LOG_LEVEL": "DEBUG" if verbose else "INFO",
+            },
+            priority="cmdline",
+        )
         d = crawler.crawl(MainSpider, config=config)
     else:
+        crawler.settings.setdict(
+            {
+                "LOG_LEVEL": "INFO",  # DEBUG log is annoying during interactive shell
+                "LOGSTATS_INTERVAL": 1440,  # 1440 min, almost not showing logs
+            },
+            priority="cmdline",
+        )
         d = crawler.crawl(
             DebugSpider,
             config=config,
@@ -70,17 +79,28 @@ def main(
 
 @typechecked
 def choose_structure_definitions(structure_description_list: List[str]) -> int:
-    prompt_message = "Choose structure for debug\n"
+    prompt_message = ""
     structure_count = len(structure_description_list)
     for index, description in enumerate(structure_description_list):
         structure_number = index + 1
         prompt_message += f"[{structure_number}] {description}"
+    prompt_message += "Choose structure for debug"
 
-    choosed_number = cast(int, click.prompt(prompt_message, type=click.IntRange(1, structure_count)))
+    choosed_number = cast(
+        int, click.prompt(prompt_message, type=click.IntRange(1, structure_count))
+    )
     return choosed_number - 1
 
+
 @typechecked
-def start_debug_repl(user_ns: Dict[str, Any]) -> None:
+async def start_debug_repl(user_ns: Dict[str, Any]) -> None:
+    await asyncio.get_running_loop().run_in_executor(
+        None, functools.partial(start_ipython_process, user_ns)
+    )
+
+
+@typechecked
+def start_ipython_process(user_ns: Dict[str, Any]) -> None:
     start_ipython(argv=[], user_ns=user_ns)
 
 

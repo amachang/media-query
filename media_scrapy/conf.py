@@ -161,13 +161,15 @@ class SiteConfig:
         url_info, structure_node = self.get_response_url_info_and_structure_node(
             res, req_url_info
         )
-        commands = self.get_url_commands_impl(url_info, structure_node)
         return {
             **vars(url_info),
             "url_info": url_info,
             "structure_node": structure_node,
-            "commands": commands,
+            "get_commands": lambda: self.get_url_commands_impl(
+                url_info, structure_node
+            ),
             "get_links": lambda: get_links(url_info.res, url_info.content_node),
+            "assert_content": lambda: structure_node.assert_content(url_info),
         }
 
     def get_url_commands(
@@ -176,6 +178,7 @@ class SiteConfig:
         url_info, structure_node = self.get_response_url_info_and_structure_node(
             res, req_url_info
         )
+        structure_node.assert_content(url_info)
         return self.get_url_commands_impl(url_info, structure_node)
 
     def get_url_commands_impl(
@@ -591,7 +594,6 @@ class StructureNode:
         file_path_component = self.get_file_path_component_after_response(res_url_info)
         if file_path_component is not None:
             res_url_info.add_file_path_component(file_path_component)
-        self.assert_content(res_url_info)
         return res_url_info
 
     def match_url(self, url: str) -> Tuple[bool, Optional[re.Match]]:
