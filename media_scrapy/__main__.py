@@ -4,15 +4,15 @@ from scrapy.crawler import CrawlerRunner
 from media_scrapy import settings as setting_definitions
 from media_scrapy.spiders import MainSpider, DebugSpider
 from twisted.python.failure import Failure
-from tap import Tap
 from scrapy.utils.log import configure_logging
-from typing import Any, Optional, List, Dict, cast
+from typing import Union, Type, Any, Optional, List, Dict, cast
 import traceback
 from typeguard import typechecked
 from twisted.internet.defer import Deferred
 from twisted.internet.error import ReactorNotRunning
-from media_scrapy.conf import SiteConfig
+from media_scrapy.conf import SiteConfig, SiteConfigDefinition
 from IPython import start_ipython
+import click
 
 import asyncio
 from twisted.internet import asyncioreactor
@@ -26,33 +26,37 @@ import twisted.internet.reactor
 reactor = cast(ReactorBase, twisted.internet.reactor)
 
 
-@typechecked
-class Args(Tap):
-    site_config: Path
-    verbose: bool = False
-    check_url: Optional[str] = None
-
-    def configure(self) -> None:
-        self.add_argument("-c", "--site-config", required=True)
-        self.add_argument("-v", "--verbose", action="store_true", required=False)
-        self.add_argument("-u", "--check-url", type=str, required=False)
+@click.command
+@click.option("--site-config", "-c", "site_config_path", type=Path, required=True)
+@click.option("--verbose", "-v", "verbose", is_flag=True)
+@click.option("--check-url", "-u", "debug_target_url", type=str, required=False)
+def main_command(
+    site_config_path: Path, verbose: bool, debug_target_url: Optional[str]
+) -> None:
+    return main(site_config_path, verbose, debug_target_url)
 
 
 @typechecked
-def main(args: Args) -> None:
+def main(
+    site_config_cls_or_path: Union[Path, Type],
+    verbose: bool,
+    debug_target_url: Optional[str],
+) -> None:
     configure_logging()
     settings = Settings()
     settings.setmodule(setting_definitions, priority="project")
     settings.setdict(
         {
-            "LOG_LEVEL": "DEBUG" if args.verbose else "INFO",
+            "LOG_LEVEL": "DEBUG" if verbose else "INFO",
         },
         priority="cmdline",
     )
     crawler = CrawlerRunner(settings)
 
-    config = SiteConfig.create_by_definition(args.site_config)
-    if debug_target_url := args.check_url:
+    config = SiteConfig.create_by_definition(site_config_cls_or_path)
+    if debug_target_url is None:
+        d = crawler.crawl(MainSpider, config=config)
+    else:
         d = crawler.crawl(
             DebugSpider,
             config=config,
@@ -60,8 +64,6 @@ def main(args: Args) -> None:
             choose_structure_definitions_callback=choose_structure_definitions,
             start_debug_callback=start_debug_repl,
         )
-    else:
-        d = crawler.crawl(MainSpider, config=config)
 
     run_until_done(d)
 
@@ -104,5 +106,4 @@ def run_until_done(d: Deferred) -> None:
 
 
 if __name__ == "__main__":
-    args = Args().parse_args()
-    main(args)
+    main_command()

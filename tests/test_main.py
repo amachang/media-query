@@ -21,12 +21,7 @@ def test_main(tmpdir: Any) -> None:
             save_dir = str(Path(tmpdir))
             structure: List[Any] = []
 
-        args: Args = Args().from_dict(
-            {
-                "site_config": SiteConfigDef,
-            }
-        )
-        main(args)
+        main(SiteConfigDef, False, None)
 
 
 def test_main_init_error(tmpdir: Any) -> None:
@@ -38,11 +33,5 @@ def test_main_init_error(tmpdir: Any) -> None:
         save_dir = str(Path(tmpdir))
         structure: List[Any] = []
 
-    args: Args = Args().from_dict(
-        {
-            "site_config": SiteConfigDef,
-        }
-    )
-
     with pytest.raises(TestError):
-        main(args)
+        main(SiteConfigDef, False, None)

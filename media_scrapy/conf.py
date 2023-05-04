@@ -32,7 +32,6 @@ from schema import Schema, Or, SchemaError, Optional as SchemaOptional
 from typeguard import typechecked, check_type, TypeCheckError
 import personal_xpath_functions
 from lxml.etree import XPath, XPathSyntaxError
-from IPython import start_ipython
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
