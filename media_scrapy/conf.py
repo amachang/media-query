@@ -80,63 +80,63 @@ class SiteConfig:
 
     @classmethod
     def create_by_definition(
-        cls, site_conf_def: Union[str, Path, Type[SiteConfigDefinition]]
+        cls, definition_cls_or_path: Union[str, Path, Type[SiteConfigDefinition]]
     ) -> "SiteConfig":
-        if inspect.isclass(site_conf_def):
-            site_conf_cls = site_conf_def
+        if inspect.isclass(definition_cls_or_path):
+            definition_cls = definition_cls_or_path
         else:
-            if isinstance(site_conf_def, str):
-                site_conf_path = Path(site_conf_def)
+            if isinstance(definition_cls_or_path, str):
+                definition_path = Path(definition_cls_or_path)
             else:
-                assert isinstance(site_conf_def, Path)
-                site_conf_path = site_conf_def
+                assert isinstance(definition_cls_or_path, Path)
+                definition_path = definition_cls_or_path
 
-            site_conf_matches = re.search(f"(.*)\\.py$", site_conf_path.name)
-            if site_conf_matches is None:
+            definition_match = re.search(f"(.*)\\.py$", definition_path.name)
+            if definition_match is None:
                 raise MediaScrapyError(
-                    f"Site config file must be a python file: {site_conf_path}"
+                    f"Site config file must be a python file: {definition_path}"
                 )
 
-            if not site_conf_path.exists():
-                raise MediaScrapyError(f"Site config file not found: {site_conf_path}")
+            if not definition_path.exists():
+                raise MediaScrapyError(f"Site config file not found: {definition_path}")
 
-            site_conf_modulename = site_conf_matches.group(1)
-            site_conf_module_loader = SourceFileLoader(
-                site_conf_modulename, str(site_conf_path)
+            definition_modulename = definition_match.group(1)
+            definition_module_loader = SourceFileLoader(
+                definition_modulename, str(definition_path)
             )
 
             try:
-                site_conf_module = site_conf_module_loader.load_module()
+                definition_module = definition_module_loader.load_module()
             except SyntaxError as err:
                 raise MediaScrapyError(
-                    f"Invalid python syntax in site config: {site_conf_path}"
+                    f"Invalid python syntax in site config: {definition_path}"
                 ) from err
 
-            site_conf_cls_candidates = list(
-                filter(inspect.isclass, vars(site_conf_module).values())
+            definition_cls_candidates = list(
+                filter(inspect.isclass, vars(definition_module).values())
             )
 
             def is_site_config_def(cls: Type) -> bool:
                 assert hasattr(cls, "__name__")
                 return re.search(r"SiteConfig", cls.__name__) is not None
 
-            site_conf_cls_candidates = list(
-                filter(is_site_config_def, site_conf_cls_candidates)
+            definition_cls_candidates = list(
+                filter(is_site_config_def, definition_cls_candidates)
             )
 
-            if len(site_conf_cls_candidates) < 1:
+            if len(definition_cls_candidates) < 1:
                 raise MediaScrapyError(
-                    f"Class not found in site config: {site_conf_path}"
+                    f"Class not found in site config: {definition_path}"
                 )
 
-            if 1 < len(site_conf_cls_candidates):
+            if 1 < len(definition_cls_candidates):
                 raise MediaScrapyError(
-                    f"Too many classes in site config: {site_conf_cls_candidates}"
+                    f"Too many classes in site config: {definition_cls_candidates}"
                 )
 
-            site_conf_cls = site_conf_cls_candidates[0]
+            definition_cls = definition_cls_candidates[0]
 
-        return cls(site_conf_cls())
+        return cls(definition_cls())
 
     def get_start_command(self) -> "RequestUrlCommand":
         url_info = UrlInfo(self.start_url)
