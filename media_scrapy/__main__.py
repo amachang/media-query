@@ -11,6 +11,7 @@ import traceback
 from typeguard import typechecked
 from twisted.internet.defer import Deferred
 from twisted.internet.error import ReactorNotRunning
+from media_scrapy.conf import SiteConfig
 
 import asyncio
 from twisted.internet import asyncioreactor
@@ -49,9 +50,8 @@ def main(args: Args) -> None:
     )
     crawler = CrawlerRunner(settings)
 
-    d = crawler.crawl(
-        MainSpider, siteconf=args.site_config, debug_target_url=args.check_url
-    )
+    config = SiteConfig.create_by_definition(args.site_config)
+    d = crawler.crawl(MainSpider, config=config, debug_target_url=args.check_url)
 
     run_until_done(d)
 

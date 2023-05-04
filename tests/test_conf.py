@@ -7,6 +7,8 @@ from .utils import fake_response
 from dataclasses import dataclass, field
 from hashlib import md5
 
+site_config_dir = path.join(path.dirname(__file__), "site_configs")
+
 
 def test_site_config_init() -> None:
     @dataclass
@@ -126,6 +128,47 @@ def test_site_config_init_error() -> None:
 
     with pytest.raises(SchemaError):
         SiteConfig(ConfDef5())
+
+
+def test_site_config_create_by_file() -> None:
+    SiteConfig.create_by_definition(path.join(site_config_dir, "site_config_000.py"))
+    SiteConfig.create_by_definition(
+        Path(site_config_dir).joinpath("site_config_000.py")
+    )
+
+
+def test_site_config_create_by_definition_error() -> None:
+    with pytest.raises(MediaScrapyError):
+        SiteConfig.create_by_definition(
+            path.join(site_config_dir, "invalid_extension.txt")
+        )
+
+    with pytest.raises(MediaScrapyError):
+        SiteConfig.create_by_definition(path.join(site_config_dir, "not_found.py"))
+
+    try:
+        syntax_error_site_config_path = Path(site_config_dir).joinpath(
+            "syntax_error.py"
+        )
+        assert not syntax_error_site_config_path.exists()
+        syntax_error_site_config_path.write_text("foo bar")
+
+        assert syntax_error_site_config_path.exists()
+        with pytest.raises(MediaScrapyError):
+            SiteConfig.create_by_definition(syntax_error_site_config_path)
+    finally:
+        syntax_error_site_config_path.unlink()
+    assert not syntax_error_site_config_path.exists()
+
+    with pytest.raises(MediaScrapyError):
+        SiteConfig.create_by_definition(
+            path.join(site_config_dir, "site_config_no_class.py")
+        )
+
+    with pytest.raises(MediaScrapyError):
+        SiteConfig.create_by_definition(
+            path.join(site_config_dir, "site_config_duplicated.py")
+        )
 
 
 def test_get_url_commands_with_kwargs_url_matcher() -> None:

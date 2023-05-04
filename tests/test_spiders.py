@@ -4,12 +4,11 @@ from os import path
 from .utils import fake_spider, fake_response
 from pathlib import Path
 from media_scrapy.spiders import *
+from media_scrapy.conf import SiteConfig
 from media_scrapy.errors import MediaScrapyError
 from media_scrapy.items import DownloadUrlItem, SaveFileContentItem
 from scrapy.http import Request, FormRequest
 from typeguard import TypeCheckError
-
-site_config_dir = path.join(path.dirname(__file__), "site_configs")
 
 
 def test_main_spider_init() -> None:
@@ -18,40 +17,7 @@ def test_main_spider_init() -> None:
         save_dir = "/tmp"
         structure: List[Any] = []
 
-    MainSpider(siteconf=SiteConfigDef)
-
-
-def test_main_spider_init_by_file() -> None:
-    MainSpider(siteconf=path.join(site_config_dir, "site_config_000.py"))
-    MainSpider(siteconf=Path(site_config_dir).joinpath("site_config_000.py"))
-
-
-def test_main_spider_init_error() -> None:
-    with pytest.raises(MediaScrapyError):
-        MainSpider(siteconf=path.join(site_config_dir, "invalid_extension.txt"))
-
-    with pytest.raises(MediaScrapyError):
-        MainSpider(siteconf=path.join(site_config_dir, "not_found.py"))
-
-    try:
-        syntax_error_site_config_path = Path(site_config_dir).joinpath(
-            "syntax_error.py"
-        )
-        assert not syntax_error_site_config_path.exists()
-        syntax_error_site_config_path.write_text("foo bar")
-
-        assert syntax_error_site_config_path.exists()
-        with pytest.raises(MediaScrapyError):
-            MainSpider(siteconf=syntax_error_site_config_path)
-    finally:
-        syntax_error_site_config_path.unlink()
-    assert not syntax_error_site_config_path.exists()
-
-    with pytest.raises(MediaScrapyError):
-        MainSpider(siteconf=path.join(site_config_dir, "site_config_no_class.py"))
-
-    with pytest.raises(MediaScrapyError):
-        MainSpider(siteconf=path.join(site_config_dir, "site_config_duplicated.py"))
+    MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef))
 
 
 def test_main_spider_start_requests() -> None:
@@ -60,7 +26,7 @@ def test_main_spider_start_requests() -> None:
         save_dir = "/tmp"
         structure: List[Any] = []
 
-    spider = MainSpider(siteconf=SiteConfigDef000)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef000))
     req = next(spider.start_requests())
     assert req.url == "http://example.com/"
     assert req.callback == spider.parse
@@ -77,7 +43,7 @@ def test_main_spider_start_requests() -> None:
         save_dir = "/tmp"
         structure: List[Any] = []
 
-    spider = MainSpider(siteconf=SiteConfigDef001)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef001))
     req = next(spider.start_requests())
     assert req.url == "http://example.com/"
     assert req.callback == spider.login
@@ -96,7 +62,7 @@ def test_main_spider_login() -> None:
         save_dir = "/tmp"
         structure: List[Any] = []
 
-    spider = MainSpider(siteconf=SiteConfigDef)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef))
     res = fake_response()
     req = next(spider.login(res))
     assert isinstance(req, FormRequest)
@@ -129,7 +95,7 @@ def test_main_spider_parse() -> None:
             },
         ]
 
-    spider = MainSpider(siteconf=SiteConfigDef)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef))
     res = fake_response(body=b"<a href='/aaa_dir'>dir1</a><a href='/bbb_dir'>dir1</a>")
     results = list(spider.parse(res))
     assert len(results) == 2
@@ -202,14 +168,15 @@ def test_get_first_request() -> None:
             },
         ]
 
-    spider = MainSpider(siteconf=SiteConfigDef)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef))
     request = spider.get_first_request()
     assert request.url == "http://example.com/"
     assert request.callback == spider.parse
     assert request.dont_filter == True
 
     spider = MainSpider(
-        siteconf=SiteConfigDef, debug_target_url="http://example.com/aaa"
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/aaa",
     )
     request = spider.get_first_request()
     assert request.url == "http://example.com/aaa"

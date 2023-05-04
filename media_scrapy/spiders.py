@@ -9,7 +9,6 @@ import scrapy
 from scrapy.http import Request, FormRequest, Response
 from media_scrapy.errors import MediaScrapyError
 from media_scrapy.conf import (
-    SiteConfigDefinition,
     SiteConfig,
     DownloadUrlCommand,
     SaveFileContentCommand,
@@ -25,11 +24,11 @@ class MainSpider(scrapy.Spider):
 
     def __init__(
         self,
-        siteconf: Union[str, Path, Type[SiteConfigDefinition]],
+        config: SiteConfig,
         debug_target_url: Optional[str] = None,
     ) -> None:
         super().__init__()
-        self.config = SiteConfig.create_by_definition(siteconf)
+        self.config = config
         self.debug_target_url = debug_target_url
 
     def start_requests(self) -> Iterator[Request]:

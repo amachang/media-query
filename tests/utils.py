@@ -4,7 +4,7 @@ from pathlib import Path
 from scrapy.settings import Settings
 from media_scrapy import settings as setting_definitions
 from media_scrapy.spiders import MainSpider
-from media_scrapy.conf import UrlInfo
+from media_scrapy.conf import SiteConfig, UrlInfo
 
 
 def fake_response(
@@ -41,7 +41,7 @@ def fake_spider(
     settings.setmodule(setting_definitions, priority="project")
     if additional_settings is not None:
         settings.setdict(additional_settings, priority="cmdline")
-    spider = MainSpider(siteconf=SiteConfigDef)
+    spider = MainSpider(config=SiteConfig.create_by_definition(SiteConfigDef))
     spider.settings = settings
 
     return spider
