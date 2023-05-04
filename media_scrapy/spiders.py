@@ -148,12 +148,16 @@ class DebugSpider(SpiderBase):
         if len(command_candidates) == 0:
             raise MediaScrapyError(f"No structures for url: {self.debug_target_url}")
 
-        command_index = self.choose_structure_definitions(
-            [structure_desc for structure_desc, command in command_candidates]
-        )
-        structure_desc, command = command_candidates[command_index]
+        if len(command_candidates) == 1:
+            command_index = 0
+        else:
+            command_index = self.choose_structure_definitions(
+                [structure_desc for structure_desc, command in command_candidates]
+            )
 
+        structure_desc, command = command_candidates[command_index]
         self.logger.info(f"Requesting...: {command.url_info.url}")
+
         return self.get_request_for_command(command, self.parse, True)
 
     async def parse(self, res: Response) -> None:
