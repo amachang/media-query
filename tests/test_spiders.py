@@ -174,10 +174,12 @@ def test_get_first_request() -> None:
     assert request.callback == spider.parse
     assert request.dont_filter == True
 
-    spider = MainSpider(
+    spider = DebugSpider(
         config=SiteConfig.create_by_definition(SiteConfigDef),
         debug_target_url="http://example.com/aaa",
+        choose_structure_definitions_callback=lambda *args: 0,
+        start_debug_callback=lambda *args: None,
     )
     request = spider.get_first_request()
     assert request.url == "http://example.com/aaa"
-    assert request.callback == spider.debug_response
+    assert request.callback == spider.parse

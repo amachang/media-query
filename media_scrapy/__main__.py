@@ -2,16 +2,17 @@ from pathlib import Path
 from scrapy.settings import Settings
 from scrapy.crawler import CrawlerRunner
 from media_scrapy import settings as setting_definitions
-from media_scrapy.spiders import MainSpider
+from media_scrapy.spiders import MainSpider, DebugSpider
 from twisted.python.failure import Failure
 from tap import Tap
 from scrapy.utils.log import configure_logging
-from typing import Any, Optional, cast
+from typing import Any, Optional, List, Dict, cast
 import traceback
 from typeguard import typechecked
 from twisted.internet.defer import Deferred
 from twisted.internet.error import ReactorNotRunning
 from media_scrapy.conf import SiteConfig
+from IPython import start_ipython
 
 import asyncio
 from twisted.internet import asyncioreactor
@@ -51,9 +52,29 @@ def main(args: Args) -> None:
     crawler = CrawlerRunner(settings)
 
     config = SiteConfig.create_by_definition(args.site_config)
-    d = crawler.crawl(MainSpider, config=config, debug_target_url=args.check_url)
+    if debug_target_url := args.check_url:
+        d = crawler.crawl(
+            DebugSpider,
+            config=config,
+            debug_target_url=debug_target_url,
+            choose_structure_definitions_callback=choose_structure_definitions,
+            start_debug_callback=start_debug_repl,
+        )
+    else:
+        d = crawler.crawl(MainSpider, config=config)
 
     run_until_done(d)
+
+
+@typechecked
+def choose_structure_definitions(structure_target_list: List[str]) -> int:
+    # raise NotImplementedError()
+    return 0
+
+
+@typechecked
+def start_debug_repl(user_ns: Dict[str, Any]) -> None:
+    start_ipython(argv=[], user_ns=user_ns)
 
 
 @typechecked

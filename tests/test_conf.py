@@ -1025,7 +1025,7 @@ def test_get_url_commands_assert_content() -> None:
         config.get_url_commands(res, res.meta["url_info"])
 
 
-def test_get_simulated_command_for_url() -> None:
+def test_get_simulated_command_candidates_for_url() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"
@@ -1039,10 +1039,14 @@ def test_get_simulated_command_for_url() -> None:
             {
                 "url": r"http://example\.com/aaa/(\w+)",  # duplicated
             },
+            {"content": ".//a"},
         ]
 
     config = SiteConfig(ConfDef1())
-    command = config.get_simulated_command_for_url("http://example.com/")
+    candidates = config.get_simulated_command_candidates_for_url("http://example.com/")
+    assert len(candidates) == 1
+    structure_desc, command = candidates[0]
+    assert structure_desc == '{\n    "url": "http://example\\\\.com/",\n}\n'
     url_info = command.url_info
     assert url_info.url == "http://example.com/"
     assert url_info.link_el.attrib["href"] == "http://example.com/"
@@ -1051,11 +1055,15 @@ def test_get_simulated_command_for_url() -> None:
     assert url_info.file_path == ""
     assert url_info.structure_path == [0]
 
-    with pytest.raises(MediaScrapyError):
-        config.get_simulated_command_for_url("http://example.com/aaa/bbb")
+    candidates = config.get_simulated_command_candidates_for_url(
+        "http://example.com/aaa/bbb"
+    )
+    assert len(candidates) == 3
 
-    with pytest.raises(MediaScrapyError):
-        config.get_simulated_command_for_url("http://example.com/not_matched")
+    candidates = config.get_simulated_command_candidates_for_url(
+        "http://example.com/not_matched"
+    )
+    assert len(candidates) == 0
 
 
 def test_structure_ndoe_get_simulated_url_info_list() -> None:

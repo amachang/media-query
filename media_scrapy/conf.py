@@ -142,41 +142,34 @@ class SiteConfig:
         url_info = UrlInfo(self.start_url)
         return RequestUrlCommand(url_info=url_info)
 
-    def get_simulated_command_for_url(self, url: str) -> "RequestUrlCommand":
+    def get_simulated_command_candidates_for_url(
+        self, url: str
+    ) -> List[Tuple[str, "RequestUrlCommand"]]:
+        candidates = []
         url_info_list = self.root_structure_node.get_simulated_url_info_list(url)
-        if 0 == len(url_info_list):
-            raise MediaScrapyError(error_message("No structure matched for url", url))
-        elif 1 < len(url_info_list):
-            structure_node_list = [
-                self.root_structure_node.get_node_by_path(url_info.structure_path)
-                for url_info in url_info_list
-            ]
-            raise MediaScrapyError(
-                error_message_for_list(
-                    f"Multiple structures matched for {url} (currently not supported)",
-                    structure_node_list,
-                )
+        for url_info in url_info_list:
+            structure_node = self.root_structure_node.get_node_by_path(
+                url_info.structure_path
             )
-        else:
-            assert 1 == len(url_info_list)
-            url_info = url_info_list[0]
-            return RequestUrlCommand(url_info=url_info)
+            command = RequestUrlCommand(url_info=url_info)
+            candidates.append((get_source_string(structure_node), command))
 
-    def debug_response(self, res: Response, req_url_info: "UrlInfo") -> None:
+        return candidates
+
+    def get_debug_environment(
+        self, res: Response, req_url_info: "UrlInfo"
+    ) -> Dict[str, Any]:
         url_info, structure_node = self.get_response_url_info_and_structure_node(
             res, req_url_info
         )
         commands = self.get_url_commands_impl(url_info, structure_node)
-        start_ipython(
-            argv=[],
-            user_ns={
-                **vars(url_info),
-                "url_info": url_info,
-                "structure_node": structure_node,
-                "commands": commands,
-                "get_links": lambda: get_links(url_info.res, url_info.content_node),
-            },
-        )
+        return {
+            **vars(url_info),
+            "url_info": url_info,
+            "structure_node": structure_node,
+            "commands": commands,
+            "get_links": lambda: get_links(url_info.res, url_info.content_node),
+        }
 
     def get_url_commands(
         self, res: Response, req_url_info: "UrlInfo"

@@ -10,6 +10,7 @@ from scrapy.http import Request, FormRequest, Response
 from media_scrapy.errors import MediaScrapyError
 from media_scrapy.conf import (
     SiteConfig,
+    UrlCommand,
     DownloadUrlCommand,
     SaveFileContentCommand,
     RequestUrlCommand,
@@ -19,23 +20,19 @@ from typeguard import typechecked
 
 
 @typechecked
-class MainSpider(scrapy.Spider):
-    name = "main"
-
-    def __init__(
-        self,
-        config: SiteConfig,
-        debug_target_url: Optional[str] = None,
-    ) -> None:
+class SpiderBase(scrapy.Spider):
+    def __init__(self, config: SiteConfig) -> None:
         super().__init__()
         self.config = config
-        self.debug_target_url = debug_target_url
 
     def start_requests(self) -> Iterator[Request]:
         if self.config.needs_login:
-            yield self.get_start_request(self.login)
+            yield self.get_start_request_before_login()
         else:
             yield self.get_first_request()
+
+    def get_start_request_before_login(self) -> Request:
+        return self.get_start_request(self.login)
 
     def login(self, res: Response) -> Iterator[Request]:
         assert self.config.needs_login
@@ -55,60 +52,100 @@ class MainSpider(scrapy.Spider):
     def parse_login(self, res: Response) -> Iterator[Request]:
         yield self.get_first_request()
 
-    def parse(
-        self, res: Response
-    ) -> Iterator[Union[Request, SaveFileContentItem, DownloadUrlItem]]:
-        commands = self.config.get_url_commands(res, res.meta["url_info"])
-
-        for command in commands:
-            if isinstance(command, SaveFileContentCommand):
-                yield SaveFileContentItem(
-                    file_content=command.file_content,
-                    file_path=path.abspath(
-                        path.join(self.config.save_dir, command.file_path)
-                    ),
-                )
-
-            elif isinstance(command, DownloadUrlCommand):
-                yield DownloadUrlItem(
-                    url=command.url,
-                    file_path=path.abspath(
-                        path.join(self.config.save_dir, command.file_path)
-                    ),
-                )
-
-            elif isinstance(command, RequestUrlCommand):
-                yield self.create_request(command, self.parse)
-
-            else:
-                assert False
-
-    def debug_response(self, res: Response) -> None:
-        self.config.debug_response(res, res.meta["url_info"])
-
-    def get_first_request(self) -> Request:
-        if self.debug_target_url is not None:
-            command = self.config.get_simulated_command_for_url(self.debug_target_url)
-            return self.create_request(command, self.debug_response)
-        else:
-            return self.get_start_request(self.parse)
-
     def get_start_request(
         self,
         callback: Callable[[Response], Any],
     ) -> Request:
         command = self.config.get_start_command()
-        return self.create_request(command, callback, True)
+        return self.get_request_for_command(command, callback, True)
 
-    def create_request(
+    def get_item_for_command(self, command: UrlCommand) -> Optional[scrapy.Item]:
+        if isinstance(command, SaveFileContentCommand):
+            return SaveFileContentItem(
+                file_content=command.file_content,
+                file_path=path.abspath(
+                    path.join(self.config.save_dir, command.file_path)
+                ),
+            )
+
+        elif isinstance(command, DownloadUrlCommand):
+            return DownloadUrlItem(
+                url=command.url,
+                file_path=path.abspath(
+                    path.join(self.config.save_dir, command.file_path)
+                ),
+            )
+        else:
+            return None
+
+    def get_request_for_command(
         self,
-        command: RequestUrlCommand,
+        command: UrlCommand,
         callback: Callable[[Response], Any],
         dont_filter: bool = False,
-    ) -> Request:
-        return Request(
-            command.url_info.url,
-            callback=callback,
-            dont_filter=dont_filter,
-            meta={"url_info": command.url_info},
+    ) -> Optional[Request]:
+        if isinstance(command, RequestUrlCommand):
+            return Request(
+                command.url_info.url,
+                callback=callback,
+                dont_filter=dont_filter,
+                meta={"url_info": command.url_info},
+            )
+        else:
+            return None
+
+    def get_first_request(self) -> Request:
+        raise NotImplementedError()
+
+
+@typechecked
+class MainSpider(SpiderBase):
+    name = "main"
+
+    def get_first_request(self) -> Request:
+        return self.get_start_request(self.parse)
+
+    def parse(self, res: Response) -> Iterator[Union[Request, scrapy.Item]]:
+        commands = self.config.get_url_commands(res, res.meta["url_info"])
+
+        for command in commands:
+            if item := self.get_item_for_command(command):
+                yield item
+            if req := self.get_request_for_command(command, self.parse):
+                yield req
+
+
+@typechecked
+class DebugSpider(SpiderBase):
+    name = "debug"
+
+    def __init__(
+        self,
+        config: SiteConfig,
+        debug_target_url: str,
+        choose_structure_definitions_callback: Callable[[List[str]], int],
+        start_debug_callback: Callable[[Dict[str, Any]], None],
+    ) -> None:
+        super().__init__(config)
+        self.config = config
+        self.debug_target_url = debug_target_url
+        self.choose_structure_definitions = choose_structure_definitions_callback
+        self.start_debug = start_debug_callback
+
+    def get_first_request(self) -> Request:
+        command_candidates = self.config.get_simulated_command_candidates_for_url(
+            self.debug_target_url
         )
+        if len(command_candidates) == 0:
+            raise MediaScrapyError(f"No structures for url: {self.debug_target_url}")
+
+        command_index = self.choose_structure_definitions(
+            [structure_desc for structure_desc, command in command_candidates]
+        )
+        structure_desc, command = command_candidates[command_index]
+
+        return self.get_request_for_command(command, self.parse, True)
+
+    def parse(self, res: Response) -> None:
+        debug_env = self.config.get_debug_environment(res, res.meta["url_info"])
+        self.start_debug(debug_env)
