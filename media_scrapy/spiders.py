@@ -2,7 +2,6 @@ import json
 from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable
 from pathlib import Path
 import re
-from importlib.machinery import SourceFileLoader
 import inspect
 from os import path
 import os
@@ -29,64 +28,8 @@ class MainSpider(scrapy.Spider):
         siteconf: Union[str, Path, Type[SiteConfigDefinition]],
         debug_target_url: Optional[str] = None,
     ) -> None:
-        super().__init__(siteconf=siteconf)
-
-        if inspect.isclass(siteconf):
-            site_conf_cls = siteconf
-        else:
-            if isinstance(siteconf, str):
-                site_conf_path = Path(siteconf)
-            else:
-                assert isinstance(siteconf, Path)
-                site_conf_path = siteconf
-
-            site_conf_matches = re.search(f"(.*)\\.py$", site_conf_path.name)
-            if site_conf_matches is None:
-                raise MediaScrapyError(
-                    f"Site config file must be a python file: {site_conf_path}"
-                )
-
-            if not site_conf_path.exists():
-                raise MediaScrapyError(f"Site config file not found: {site_conf_path}")
-
-            site_conf_modulename = site_conf_matches.group(1)
-            site_conf_module_loader = SourceFileLoader(
-                site_conf_modulename, str(site_conf_path)
-            )
-
-            try:
-                site_conf_module = site_conf_module_loader.load_module()
-            except SyntaxError as err:
-                raise MediaScrapyError(
-                    f"Invalid python syntax in site config: {site_conf_path}"
-                ) from err
-
-            site_conf_cls_candidates = list(
-                filter(inspect.isclass, vars(site_conf_module).values())
-            )
-
-            def is_site_config_def(cls: Type) -> bool:
-                assert hasattr(cls, "__name__")
-                return re.search(r"SiteConfig", cls.__name__) is not None
-
-            site_conf_cls_candidates = list(
-                filter(is_site_config_def, site_conf_cls_candidates)
-            )
-
-            if len(site_conf_cls_candidates) < 1:
-                raise MediaScrapyError(
-                    f"Class not found in site config: {site_conf_path}"
-                )
-
-            if 1 < len(site_conf_cls_candidates):
-                raise MediaScrapyError(
-                    f"Too many classes in site config: {site_conf_cls_candidates}"
-                )
-
-            site_conf_cls = site_conf_cls_candidates[0]
-
-        site_conf = site_conf_cls()
-        self.config = SiteConfig(site_conf)
+        super().__init__()
+        self.config = SiteConfig.create_by_definition(siteconf)
         self.debug_target_url = debug_target_url
 
     def start_requests(self) -> Iterator[Request]:

@@ -15,6 +15,7 @@ from typing import (
     TypeVar,
     Tuple,
     Generic,
+    Type,
 )
 from textwrap import indent
 import re
@@ -32,6 +33,8 @@ from typeguard import typechecked, check_type, TypeCheckError
 import personal_xpath_functions
 from lxml.etree import XPath, XPathSyntaxError
 from IPython import start_ipython
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
 
 
 @typechecked
@@ -74,6 +77,66 @@ class SiteConfig:
             self.needs_login = False
 
         self.root_structure_node = parse_structure_list(conf_def.structure)
+
+    @classmethod
+    def create_by_definition(
+        cls, site_conf_def: Union[str, Path, Type[SiteConfigDefinition]]
+    ) -> "SiteConfig":
+        if inspect.isclass(site_conf_def):
+            site_conf_cls = site_conf_def
+        else:
+            if isinstance(site_conf_def, str):
+                site_conf_path = Path(site_conf_def)
+            else:
+                assert isinstance(site_conf_def, Path)
+                site_conf_path = site_conf_def
+
+            site_conf_matches = re.search(f"(.*)\\.py$", site_conf_path.name)
+            if site_conf_matches is None:
+                raise MediaScrapyError(
+                    f"Site config file must be a python file: {site_conf_path}"
+                )
+
+            if not site_conf_path.exists():
+                raise MediaScrapyError(f"Site config file not found: {site_conf_path}")
+
+            site_conf_modulename = site_conf_matches.group(1)
+            site_conf_module_loader = SourceFileLoader(
+                site_conf_modulename, str(site_conf_path)
+            )
+
+            try:
+                site_conf_module = site_conf_module_loader.load_module()
+            except SyntaxError as err:
+                raise MediaScrapyError(
+                    f"Invalid python syntax in site config: {site_conf_path}"
+                ) from err
+
+            site_conf_cls_candidates = list(
+                filter(inspect.isclass, vars(site_conf_module).values())
+            )
+
+            def is_site_config_def(cls: Type) -> bool:
+                assert hasattr(cls, "__name__")
+                return re.search(r"SiteConfig", cls.__name__) is not None
+
+            site_conf_cls_candidates = list(
+                filter(is_site_config_def, site_conf_cls_candidates)
+            )
+
+            if len(site_conf_cls_candidates) < 1:
+                raise MediaScrapyError(
+                    f"Class not found in site config: {site_conf_path}"
+                )
+
+            if 1 < len(site_conf_cls_candidates):
+                raise MediaScrapyError(
+                    f"Too many classes in site config: {site_conf_cls_candidates}"
+                )
+
+            site_conf_cls = site_conf_cls_candidates[0]
+
+        return cls(site_conf_cls())
 
     def get_start_command(self) -> "RequestUrlCommand":
         url_info = UrlInfo(self.start_url)
