@@ -9,7 +9,7 @@ setup(
         "schema~=0.7.5",
         "typeguard~=3.0.2",
         "personal-xpath-functions@git+https://github.com/amachang/personal-xpath-functions@main",
-        "ipython~=8.12.1",
+        "ipython~=8.12.2",
         "click~=8.1.3",
     ],
     author="Hitoshi Amano",
