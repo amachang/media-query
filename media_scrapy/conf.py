@@ -164,6 +164,19 @@ class SiteConfig:
             res, req_url_info
         )
 
+        banner_message = "Usage:\n"
+        banner_message += "    url: The URL being requested\n"
+        banner_message += "    given_url: The URL you passed\n"
+        banner_message += "    res: A Scrapy response object\n"
+        banner_message += "    content_node: The XPath-extracted content area\n"
+        banner_message += (
+            "    explain(): Provide a detailed explanation of the current page state\n"
+        )
+        banner_message += "    help(): Display this help message\n"
+
+        def env_func_help() -> None:
+            print(banner_message)
+
         def env_func_explain() -> None:
             message = ""
             message += "Matched url:\n"
@@ -200,7 +213,9 @@ class SiteConfig:
                 message += f"    {len(file_content)} bytes binary\n"
             else:
                 message += (
-                    f"    " + re.sub(r"\n", "\\\\n", text_file_content[0:80]) + " ...\n"
+                    f'    "'
+                    + re.sub(r"\n", "\\\\n", text_file_content[0:80])
+                    + " ...\n"
                 )
 
             message += "Next actions:\n"
@@ -234,8 +249,10 @@ class SiteConfig:
 
         return {
             # main usage
+            "help": env_func_help,
             "explain": env_func_explain,
             # url info
+            "given_url": url_info.original_url,
             "url": url_info.url,
             "url_match": url_info.url_match,
             "res": url_info.res,
@@ -249,6 +266,7 @@ class SiteConfig:
             "structure_node": structure_node,
             "get_content_urls": env_func_get_content_urls,
             "get_commands": env_func_get_commands,
+            "banner_message": banner_message,
         }
 
     def get_url_commands(

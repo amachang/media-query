@@ -101,8 +101,13 @@ def start_debug_repl(user_ns: Dict[str, Any]) -> None:
 def start_ipython_process(user_ns: Dict[str, Any]) -> None:
     # lazy import so as to mockable
     from IPython import start_ipython
+    from traitlets.config.loader import Config
 
-    start_ipython(argv=[], user_ns=user_ns)
+    # XXX I don't know proper way to do this
+    config = Config()
+    config.TerminalInteractiveShell.banner2 = user_ns["banner_message"]
+
+    start_ipython(argv=[], user_ns=user_ns, config=config)
 
 
 @typechecked

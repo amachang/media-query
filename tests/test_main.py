@@ -106,11 +106,15 @@ def test_start_debug_repl(mocker: MockerFixture) -> None:
     mocker.patch("IPython.start_ipython")
     from IPython import start_ipython
 
-    start_debug_repl({"foo": "bar"})
+    start_debug_repl({"foo": "bar", "banner_message": "*** welcome ***"})
 
     mock = cast(Mock, start_ipython)
     mock.assert_called_once()
-    assert mock.call_args.kwargs == {"argv": [], "user_ns": {"foo": "bar"}}
+    assert mock.call_args.kwargs["argv"] == []
+    assert mock.call_args.kwargs["user_ns"] == {
+        "foo": "bar",
+        "banner_message": "*** welcome ***",
+    }
 
 
 def test_run_until_done(mocker: MockerFixture) -> None:

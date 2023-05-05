@@ -234,6 +234,7 @@ def test_site_config_get_debug_environment() -> None:
     url_info = command.url_info
     debug_env = config.get_debug_environment(res, url_info)
     debug_env["explain"]()
+    debug_env["help"]()
     assert debug_env["url"] == "http://example.com/"
     assert debug_env["url_match"].group(1) == "example.com"
     assert debug_env["content_node"].xpath("@class").get() == "main foo"
