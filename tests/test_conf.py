@@ -180,6 +180,85 @@ def test_site_config_init_error() -> None:
             )
         )
 
+    @dataclass
+    class ConfDef7:
+        start_url: str
+        save_dir: str
+        structure: list
+
+    with pytest.raises(SchemaError):
+        config = SiteConfig(
+            ConfDef7(
+                start_url="http://example.com",
+                save_dir="/tmp",
+                structure=[
+                    {
+                        "url": 1234567,
+                    }
+                ],
+            )
+        )
+
+    @dataclass
+    class ConfDef8:
+        start_url: str
+        save_dir: str
+        structure: list
+
+    with pytest.raises(SchemaError):
+        config = SiteConfig(
+            ConfDef8(
+                start_url="http://example.com",
+                save_dir="/tmp",
+                structure=[
+                    {
+                        "url": r"http://example\.com/",
+                        "file_path": 12345678,
+                    }
+                ],
+            )
+        )
+
+    @dataclass
+    class ConfDef9:
+        start_url: str
+        save_dir: str
+        structure: list
+
+    with pytest.raises(SchemaError):
+        config = SiteConfig(
+            ConfDef9(
+                start_url="http://example.com",
+                save_dir="/tmp",
+                structure=[
+                    {
+                        "url": r"http://example\.com/",
+                        "file_content": 12345678,
+                    }
+                ],
+            )
+        )
+
+    @dataclass
+    class ConfDef10:
+        start_url: str
+        save_dir: str
+        structure: list
+
+    with pytest.raises(SchemaError):
+        config = SiteConfig(
+            ConfDef10(
+                start_url="http://example.com",
+                save_dir="/tmp",
+                structure=[
+                    {
+                        "url": r"http://example\.com/",
+                        "assert": 12345678,
+                    }
+                ],
+            )
+        )
+
 
 def test_site_config_create_by_file() -> None:
     SiteConfig.create_by_definition(path.join(site_config_dir, "site_config_000.py"))
@@ -394,6 +473,7 @@ def test_get_url_commands_with_file_content() -> None:
     assert isinstance(command, SaveFileContentCommand)
     assert command.file_path == "test.json"
     assert command.file_content == json.dumps(["foo", "bar"]).encode("utf-8")
+    assert isinstance(command.get_description(), str)
 
     class ConfDef2:
         start_url = "http://example.com/"
@@ -445,8 +525,10 @@ def test_get_url_commands_with_paging_file_path_obtained_before_request() -> Non
     assert len(download_commands) == 2
     assert download_commands[0].url == "http://example.com/contents/foo"
     assert download_commands[0].file_path == "1/foo.txt"
+    assert isinstance(download_commands[0].get_description(), str)
     assert download_commands[1].url == "http://example.com/contents/bar"
     assert download_commands[1].file_path == "1/bar.txt"
+    assert isinstance(download_commands[1].get_description(), str)
 
     request_url_commands = [
         command for command in commands if isinstance(command, RequestUrlCommand)
@@ -459,6 +541,7 @@ def test_get_url_commands_with_paging_file_path_obtained_before_request() -> Non
     )
     assert request_url_command.url_info.structure_path == [0]
     assert request_url_command.url_info.file_path == "2"
+    assert isinstance(request_url_command.get_description(), str)
 
     res = fake_response(
         url="http://example.com/?page=2",
@@ -1376,3 +1459,55 @@ def test_get_all_required_named_args() -> None:
     assert get_all_required_named_args(lambda a: a) == ["a"]
     assert get_all_required_named_args(lambda b, a=None: a) == ["b"]
     assert get_all_required_named_args(lambda b, c, a=None: a) == ["b", "c"]
+
+
+def test_get_source_string_for_obj() -> None:
+    assert (
+        re.fullmatch(
+            r'\{ ("[abc]", ){3}\}', get_source_string_for_obj({"a", "b", "c"}, True)
+        )
+        is not None
+    )
+    assert get_source_string_for_obj(["a", "b", "c"], True) == '[ "a", "b", "c", ]'
+    assert get_source_string_for_obj(("a", "b", "c"), True) == '( "a", "b", "c", )'
+    assert (
+        get_source_string_for_obj({"a": "foo", "b": "bar", "c": "baz"}, True)
+        == '{ "a": "foo", "b": "bar", "c": "baz", }'
+    )
+    assert get_source_string_for_obj(set(), True) == "set()"
+    assert get_source_string_for_obj(list(), True) == "[]"
+    assert get_source_string_for_obj(tuple(), True) == "tuple()"
+    assert get_source_string_for_obj(dict(), True) == "{}"
+
+    class Foo:
+        pass
+
+    assert (
+        re.fullmatch(
+            r"<Foo object at 0x[0-9a-f]+>", get_source_string_for_obj(Foo(), True)
+        )
+        is not None
+    )
+
+
+def test_get_short_description_of_selector() -> None:
+    assert (
+        get_short_description_of_selector(
+            Selector("<html><body><i>test</i></body></html>").xpath("//i")[0]
+        )
+        == "<i>test</i>"
+    )
+    assert (
+        get_short_description_of_selector(
+            Selector(
+                "<html><body><ul class='list'><li>foo<li>bar<li>baz</ul></body></html>"
+            ).xpath("//ul")[0]
+        )
+        == '<ul class="list"> ...'
+    )
+    assert (
+        get_short_description_of_selector(
+            Selector("<html><body><h1>title</h1></body></html>").xpath("//h1/text()")[0]
+        )
+        == "title"
+    )

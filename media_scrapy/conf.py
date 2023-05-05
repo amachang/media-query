@@ -1369,7 +1369,7 @@ def get_source_string(source_obj: Any) -> str:
 @typechecked
 def get_source_string_for_obj(source_obj: Any, is_single_line_context: bool) -> str:
     if is_single_line_context:
-        line_break = ""
+        line_break = " "
         indentation = ""
     else:
         line_break = "\n"
@@ -1447,7 +1447,7 @@ def get_short_description_of_selector(selector: Selector) -> str:
         html_text = cast(
             str, etree.tostring(selector.root, encoding="unicode", pretty_print=True)
         )
-        html_text_lines = html_text.split("\n")
+        html_text_lines = [line for line in html_text.split("\n") if 0 < len(line)]
         assert 0 < len(html_text_lines)
         if 1 == len(html_text_lines):
             return html_text_lines[0]
