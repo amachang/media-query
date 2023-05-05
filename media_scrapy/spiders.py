@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable, Awaitable
+from typing import Dict, List, Any, Union, Optional, Type, Iterator, Callable
 from pathlib import Path
 import re
 import inspect
@@ -124,7 +124,7 @@ class DebugSpider(SpiderBase):
         config: SiteConfig,
         debug_target_url: str,
         choose_structure_definitions_callback: Callable[[List[str]], int],
-        start_debug_callback: Callable[[Dict[str, Any]], Awaitable[None]],
+        start_debug_callback: Callable[[Dict[str, Any]], None],
     ) -> None:
         super().__init__(config)
         self.config = config
@@ -160,6 +160,6 @@ class DebugSpider(SpiderBase):
 
         return self.get_request_for_command(command, self.parse, True)
 
-    async def parse(self, res: Response) -> None:
+    def parse(self, res: Response) -> None:
         debug_env = self.config.get_debug_environment(res, res.meta["url_info"])
-        await self.start_debug(debug_env)
+        self.start_debug(debug_env)

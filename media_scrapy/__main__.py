@@ -11,9 +11,7 @@ from typeguard import typechecked
 from twisted.internet.defer import Deferred
 from twisted.internet.error import ReactorNotRunning
 from media_scrapy.conf import SiteConfig, SiteConfigDefinition
-from IPython import start_ipython
 import click
-from threading import Thread
 import functools
 
 import asyncio
@@ -23,10 +21,6 @@ from scrapy.utils.reactor import install_reactor
 
 install_reactor("twisted.internet.asyncioreactor.AsyncioSelectorReactor")
 
-import twisted.internet.reactor
-
-reactor = cast(ReactorBase, twisted.internet.reactor)
-
 
 @click.command
 @click.option("--site-config", "-c", "site_config_path", type=Path, required=True)
@@ -35,7 +29,8 @@ reactor = cast(ReactorBase, twisted.internet.reactor)
 def main_command(
     site_config_path: Path, verbose: bool, debug_target_url: Optional[str]
 ) -> None:
-    return main(site_config_path, verbose, debug_target_url)
+    d = main(site_config_path, verbose, debug_target_url)
+    run_until_done(d)
 
 
 @typechecked
@@ -43,7 +38,7 @@ def main(
     site_config_cls_or_path: Union[Path, Type],
     verbose: bool,
     debug_target_url: Optional[str],
-) -> None:
+) -> Deferred:
     configure_logging()
     settings = Settings()
     settings.setmodule(setting_definitions, priority="project")
@@ -73,12 +68,12 @@ def main(
             choose_structure_definitions_callback=choose_structure_definitions,
             start_debug_callback=start_debug_repl,
         )
-
-    run_until_done(d)
+    return cast(Deferred, d)
 
 
 @typechecked
 def choose_structure_definitions(structure_description_list: List[str]) -> int:
+    assert 0 < len(structure_description_list)
     prompt_message = ""
     structure_count = len(structure_description_list)
     for index, description in enumerate(structure_description_list):
@@ -93,19 +88,30 @@ def choose_structure_definitions(structure_description_list: List[str]) -> int:
 
 
 @typechecked
-async def start_debug_repl(user_ns: Dict[str, Any]) -> None:
-    await asyncio.get_running_loop().run_in_executor(
-        None, functools.partial(start_ipython_process, user_ns)
-    )
+def start_debug_repl(user_ns: Dict[str, Any]) -> None:
+    # The implementation of ipython does not allow execution in a running event loop, so create a thread
+    from threading import Thread
+
+    ipython_thread = Thread(target=start_ipython_process, args=[user_ns])
+    ipython_thread.start()
+    ipython_thread.join()
 
 
 @typechecked
 def start_ipython_process(user_ns: Dict[str, Any]) -> None:
+    # lazy import so as to mockable
+    from IPython import start_ipython
+
     start_ipython(argv=[], user_ns=user_ns)
 
 
 @typechecked
 def run_until_done(d: Deferred) -> None:
+    # lazy import so as to mockable
+    import twisted.internet.reactor
+
+    reactor = cast(ReactorBase, twisted.internet.reactor)
+
     result = None
 
     def callback(r: Any) -> None:

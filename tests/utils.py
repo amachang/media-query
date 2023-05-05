@@ -1,10 +1,19 @@
 from scrapy.http import Response, HtmlResponse, Request
-from typing import List, Any, Optional, Dict
+from typing import Type, List, Any, Optional, Dict
 from pathlib import Path
 from scrapy.settings import Settings
 from media_scrapy import settings as setting_definitions
 from media_scrapy.spiders import MainSpider
 from media_scrapy.conf import SiteConfig, UrlInfo
+from dill.source import dumpsource
+
+
+def make_temporary_site_config_file(tmpdir: Path, cls: Type) -> Path:
+    file_path = tmpdir.joinpath(f"{cls.__name__}.py")
+    assert not file_path.exists()
+    file_path.write_text(dumpsource(cls, alias=cls.__name__, enclose=False))
+    assert file_path.exists()
+    return file_path
 
 
 def fake_response(

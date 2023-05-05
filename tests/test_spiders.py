@@ -174,7 +174,7 @@ def test_get_first_request() -> None:
     assert request.callback == spider.parse
     assert request.dont_filter == True
 
-    async def dummy_callback(user_ns: Dict[str, Any]) -> None:
+    def dummy_callback(user_ns: Dict[str, Any]) -> None:
         pass
 
     spider = DebugSpider(
