@@ -1091,7 +1091,14 @@ class UrlConverterSchema(CallableComponentSchemaBase[str]):
                 if url_match is None:
                     return match_expansion_template
                 else:
-                    return url_match.expand(match_expansion_template)
+                    try:
+                        return url_match.expand(match_expansion_template)
+                    except re.error as err:
+                        raise MediaScrapyError(
+                            "The pattern couldn't expand the template:\n"
+                            + f"    Pattern{url_match.re.pattern}\n"
+                            + f"    Template: {match_expansion_template}\n"
+                        ) from err
 
             return CallableComponent(
                 source_obj=definition, fn=url_converter, can_accept_response=False
@@ -1153,7 +1160,14 @@ class FilePathExtractorSchema(CallableComponentSchemaBase[str]):
                 if url_match is None:
                     return match_expansion_template
                 else:
-                    return url_match.expand(match_expansion_template)
+                    try:
+                        return url_match.expand(match_expansion_template)
+                    except re.error as err:
+                        raise MediaScrapyError(
+                            "The pattern couldn't expand the template:\n"
+                            + f"    Pattern{url_match.re.pattern}\n"
+                            + f"    Template: {match_expansion_template}\n"
+                        ) from err
 
             return CallableComponent(
                 source_obj=definition, fn=file_path_extractor, can_accept_response=True

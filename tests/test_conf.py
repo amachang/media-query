@@ -1027,6 +1027,73 @@ def test_get_url_commands_using_as_url() -> None:
     with pytest.raises(MediaScrapyError):
         config.get_url_commands(res, res.meta["url_info"])
 
+    class ConfDef7:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": r"http://example\.com/",
+            },
+            {
+                "url": r"http://example\.com/contents/\w+",
+                "as_url": r"http://cdn.example.com/images/\g<1>.jpg",
+            },
+        ]
+
+    config = SiteConfig(ConfDef7())
+    res = fake_response(
+        url="http://example.com/",
+        body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
+    )
+
+    with pytest.raises(MediaScrapyError):
+        commands = config.get_url_commands(res, res.meta["url_info"])
+        print(commands)
+
+
+def test_get_url_commands_with_file_path() -> None:
+    class ConfDef0:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {"url": r"http://example\.com/", "file_path": "foo"},
+            {"url": r"http://example\.com/contents/(\w+)", "file_path": "\g<1>.jpg"},
+        ]
+
+    config = SiteConfig(ConfDef0())
+    res = fake_response(
+        url="http://example.com/",
+        body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
+    )
+    commands = list(config.get_url_commands(res, res.meta["url_info"]))
+    assert len(commands) == 2
+    assert all(isinstance(command, DownloadUrlCommand) for command in commands)
+    download_commands = cast(List[DownloadUrlCommand], commands)
+    assert [command.url for command in download_commands] == [
+        "http://example.com/contents/foo",
+        "http://example.com/contents/bar",
+    ]
+    assert [command.file_path for command in download_commands] == [
+        "foo/foo.jpg",
+        "foo/bar.jpg",
+    ]
+
+    class ConfDef1:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {"url": r"http://example\.com/", "file_path": "foo"},
+            {"url": r"http://example\.com/contents/\w+", "file_path": "\g<1>.jpg"},
+        ]
+
+    config = SiteConfig(ConfDef1())
+    res = fake_response(
+        url="http://example.com/",
+        body=b'<a href="/contents/foo">foo</a><a href="/contents/bar">bar</a>',
+    )
+    with pytest.raises(MediaScrapyError):
+        config.get_url_commands(res, res.meta["url_info"])
+
 
 def test_get_url_commands_specific_content_area() -> None:
     res = fake_response(

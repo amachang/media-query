@@ -155,6 +155,144 @@ def test_main_spider_parse() -> None:
     ]
 
 
+def test_debug_spider_get_start_request_before_login() -> None:
+    class SiteConfigDef:
+        start_url = "http://example.com/"
+        login = "http://example.com/login"
+        save_dir = "/tmp"
+        structure: List[Any] = []
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/aaa",
+        choose_structure_definitions_callback=lambda *args: 0,
+        start_debug_callback=lambda user_ns: None,
+    )
+
+    req = spider.get_start_request_before_login()
+    assert req.url == "http://example.com/"
+
+
+def test_debug_spider_login() -> None:
+    class SiteConfigDef:
+        start_url = "http://example.com/"
+        login = "http://example.com/login"
+        save_dir = "/tmp"
+        structure: List[Any] = []
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/aaa",
+        choose_structure_definitions_callback=lambda *args: 0,
+        start_debug_callback=lambda user_ns: None,
+    )
+
+    res = fake_response()
+    reqs = list(spider.login(res))
+    assert len(reqs) == 1
+    req = reqs[0]
+    assert req.url == "http://example.com/login"
+
+
+def test_debug_spider_get_first_request() -> None:
+    class SiteConfigDef:
+        start_url = "http://example.com/"
+        login = "http://example.com/login"
+        save_dir = "/tmp"
+        structure: List[Any] = [
+            {
+                "url": r"http://example\.com/",
+            },
+            [
+                [
+                    {
+                        "url": r"http://example\.com/(\w+)",
+                        "as_url": "http://example.com/\g<1>_1",
+                    },
+                ],
+                [
+                    {
+                        "url": r"http://example\.com/aaa",
+                        "as_url": "http://example.com/aaa_2",
+                    },
+                ],
+            ],
+        ]
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/aaa",
+        choose_structure_definitions_callback=lambda *args: 1,
+        start_debug_callback=lambda user_ns: None,
+    )
+
+    req = spider.get_first_request()
+    assert req.url == "http://example.com/aaa_2"
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/bbb",
+        choose_structure_definitions_callback=lambda *args: 1,
+        start_debug_callback=lambda user_ns: None,
+    )
+
+    req = spider.get_first_request()
+    assert req.url == "http://example.com/bbb_1"
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/not-matched",
+        choose_structure_definitions_callback=lambda *args: 1,
+        start_debug_callback=lambda user_ns: None,
+    )
+
+    with pytest.raises(MediaScrapyError):
+        spider.get_first_request()
+
+
+def test_debug_spider_parse() -> None:
+    class SiteConfigDef:
+        start_url = "http://example.com/"
+        login = "http://example.com/login"
+        save_dir = "/tmp"
+        structure: List[Any] = [
+            {
+                "url": r"http://example\.com/",
+            },
+            [
+                [
+                    {
+                        "url": r"http://example\.com/(\w+)",
+                        "as_url": "http://example.com/\g<1>_1",
+                    },
+                ],
+                [
+                    {
+                        "url": r"http://example\.com/aaa",
+                        "as_url": "http://example.com/aaa_2",
+                    },
+                ],
+            ],
+        ]
+
+    called = False
+
+    def debug_callback(user_ns: Dict[str, Any]) -> None:
+        nonlocal called
+        called = True
+
+    spider = DebugSpider(
+        config=SiteConfig.create_by_definition(SiteConfigDef),
+        debug_target_url="http://example.com/aaa",
+        choose_structure_definitions_callback=lambda *args: 1,
+        start_debug_callback=debug_callback,
+    )
+
+    res = fake_response()
+    spider.parse(res)
+    assert called
+
+
 def test_get_first_request() -> None:
     class SiteConfigDef:
         start_url = "http://example.com/"
