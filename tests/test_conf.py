@@ -54,6 +54,40 @@ def test_site_config_init() -> None:
         )
     )
 
+    @dataclass
+    class ConfDef3:
+        start_url: str
+        save_dir: str
+        structure: list
+        login: dict
+
+    config = SiteConfig(
+        ConfDef3(
+            start_url="http://example.com",
+            save_dir="/tmp",
+            structure=[],
+            login={
+                "url": "http://example.com/login",
+            },
+        )
+    )
+
+    @dataclass
+    class ConfDef4:
+        start_url: str
+        save_dir: str
+        structure: list
+        login: str
+
+    config = SiteConfig(
+        ConfDef4(
+            start_url="http://example.com",
+            save_dir="/tmp",
+            structure=[],
+            login="http://example.com/login",
+        )
+    )
+
 
 def test_site_config_init_error() -> None:
     class ConfDef1:
@@ -129,12 +163,153 @@ def test_site_config_init_error() -> None:
     with pytest.raises(SchemaError):
         SiteConfig(ConfDef5())
 
+    @dataclass
+    class ConfDef6:
+        start_url: str
+        save_dir: str
+        structure: list
+        login: int
+
+    with pytest.raises(MediaScrapyError):
+        config = SiteConfig(
+            ConfDef6(
+                start_url="http://example.com",
+                save_dir="/tmp",
+                structure=[],
+                login=123456,
+            )
+        )
+
 
 def test_site_config_create_by_file() -> None:
     SiteConfig.create_by_definition(path.join(site_config_dir, "site_config_000.py"))
     SiteConfig.create_by_definition(
         Path(site_config_dir).joinpath("site_config_000.py")
     )
+
+
+def test_site_config_create_by_class() -> None:
+    class ConfDef0:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [{"url": "http://example\.com/"}]
+
+    SiteConfig.create_by_definition(ConfDef0)
+
+
+def test_site_config_create_get_start_command() -> None:
+    class ConfDef0:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [{"url": "http://example\.com/"}]
+
+    config = SiteConfig(ConfDef0())
+    command = config.get_start_command()
+    assert isinstance(command, RequestUrlCommand)
+    assert command.url == "http://example.com/"
+
+
+def test_site_config_get_debug_environment() -> None:
+    class ConfDef0:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": "http://(example\.com)/",
+                "content": "//p[has-class('main')]",
+            },
+        ]
+
+    config = SiteConfig(ConfDef0())
+
+    command_candidates = config.get_simulated_command_candidates_for_url(
+        "http://example.com/"
+    )
+    assert len(command_candidates) == 1
+    command = command_candidates[0][1]
+    assert isinstance(command, RequestUrlCommand)
+
+    res_body = b"<p class='main foo'><a href='aaa.txt'>aaa</a></p><p class='bar'><a href='bbb.txt'>aaa</a></p>"
+    res = fake_response(url=command.url, body=res_body)
+    url_info = command.url_info
+    debug_env = config.get_debug_environment(res, url_info)
+    debug_env["explain"]()
+    assert debug_env["url"] == "http://example.com/"
+    assert debug_env["url_match"].group(1) == "example.com"
+    assert debug_env["content_node"].xpath("@class").get() == "main foo"
+    print(debug_env["file_content"]())
+    assert (
+        debug_env["file_content"]()
+        == b'<p class="main foo"><a href="aaa.txt">aaa</a></p>'
+    )
+    assert (
+        debug_env["file_content_as_str"]()
+        == '<p class="main foo"><a href="aaa.txt">aaa</a></p>'
+    )
+    debug_env["assert_content"]()
+    assert debug_env["get_content_urls"]() == ["http://example.com/aaa.txt"]
+    commands = debug_env["get_commands"]()
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, SaveFileContentCommand)
+    assert command.url == "http://example.com/"
+    assert command.file_content == b'<p class="main foo"><a href="aaa.txt">aaa</a></p>'
+
+    class ConfDef1:
+        start_url = "http://example.com/"
+        save_dir = "/tmp"
+        structure = [
+            {
+                "url": lambda url: url == "http://example.com/",
+                "content": "//p",
+                "file_content": lambda: b"invalid utf-8 \xf1",
+                "assert": lambda: False,
+            }
+        ]
+
+    config = SiteConfig(ConfDef1())
+
+    command_candidates = config.get_simulated_command_candidates_for_url(
+        "http://example.com/"
+    )
+    command = command_candidates[0][1]
+
+    res_body = b"<p class='main foo'><a href='aaa.txt'>aaa</a></p><p class='bar'><a href='bbb.txt'>aaa</a></p>"
+    res = fake_response(url=command.url, body=res_body)
+    url_info = command.url_info
+    debug_env = config.get_debug_environment(res, url_info)
+
+    debug_env["explain"]()
+    assert debug_env["url_match"] == None
+    assert debug_env["content_node"].xpath("@class").getall() == ["main foo", "bar"]
+    assert debug_env["get_content_urls"]() == [
+        "http://example.com/aaa.txt",
+        "http://example.com/bbb.txt",
+    ]
+    with pytest.raises(MediaScrapyError):
+        debug_env["file_content_as_str"]()
+
+    with pytest.raises(AssertionError):
+        debug_env["assert_content"]()
+
+    """
+            "explain": lambda: print(
+                "Happens in the next phase: \n"
+                + "\n".join(
+                    [
+                        "    " + cmd.get_description()
+                        for cmd in self.get_url_commands_impl(url_info, structure_node)
+                    ]
+                )
+            ),
+            "get_all_urls": lambda: get_links(url_info.res, url_info.content_node),
+            # for debug
+            "url_info": url_info,
+            "structure_node": structure_node,
+            "get_commands": lambda: self.get_url_commands_impl(
+                url_info, structure_node
+            ),
+    """
 
 
 def test_site_config_create_by_definition_error() -> None:
@@ -1066,7 +1241,7 @@ def test_get_simulated_command_candidates_for_url() -> None:
     assert len(candidates) == 0
 
 
-def test_structure_ndoe_get_simulated_url_info_list() -> None:
+def test_structure_node_get_simulated_url_info_list() -> None:
     class ConfDef1:
         start_url = "http://example.com/"
         save_dir = "/tmp"

@@ -34,6 +34,8 @@ import personal_xpath_functions
 from lxml.etree import XPath, XPathSyntaxError
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
+from lxml import etree
+from lxml.etree import _Element
 
 
 @typechecked
@@ -161,36 +163,92 @@ class SiteConfig:
         url_info, structure_node = self.get_response_url_info_and_structure_node(
             res, req_url_info
         )
+
+        def env_func_explain() -> None:
+            message = ""
+            message += "Matched url:\n"
+            message += f"    {url_info.original_url}\n"
+            message += "Requested url:\n"
+            message += f"    {url_info.url}\n"
+
+            message += "Url regex match object:\n"
+            if url_info.url_match is None:
+                message += "    None\n"
+            else:
+                message += f"    pattern: {str(url_info.url_match.re.pattern)}\n"
+                message += f"    matched:\n"
+                message += f"        0: {url_info.url_match.group(0)}\n"
+                group_texts = url_info.url_match.groups("<None>")
+                for group_index, group_text in enumerate(group_texts):
+                    message += f"        {group_index + 1}: {group_text}\n"
+
+            assert not len(url_info.content_node) == 0
+            if len(url_info.content_node) == 1:
+                message += f"Content area: {get_short_description_of_selector(url_info.content_node[0])}\n"
+            else:
+                message += f"Content area: {len(url_info.content_node)} areas\n"
+                for content_node in url_info.content_node:
+                    message += (
+                        f"    {get_short_description_of_selector(content_node)}\n"
+                    )
+
+            message += "Extracted content:\n"
+            file_content = structure_node.extract_file_content(url_info)
+            try:
+                text_file_content = file_content.decode("utf-8")
+            except UnicodeDecodeError as err:
+                message += f"    {len(file_content)} bytes binary\n"
+            else:
+                message += (
+                    f"    " + re.sub(r"\n", "\\\\n", text_file_content[0:80]) + " ...\n"
+                )
+
+            message += "Next actions:\n"
+            commands = self.get_url_commands_impl(url_info, structure_node)
+            for command in commands:
+                message += "    " + command.get_description() + "\n"
+            print(message)
+
+        def env_func_file_content() -> bytes:
+            return structure_node.extract_file_content(url_info)
+
+        def env_func_file_content_as_str() -> str:
+            content_bytes = structure_node.extract_file_content(url_info)
+            try:
+                return content_bytes.decode("utf-8")
+            except UnicodeDecodeError as err:
+                raise MediaScrapyError(
+                    "The extracted file content couldn't be decoded as UTF-8, try to use file_content() instead"
+                ) from err
+
+        def env_func_assert_content() -> None:
+            structure_node.assert_content(url_info)
+
+        def env_func_get_content_urls() -> List[str]:
+            return [
+                url for link_el, url in get_links(url_info.res, url_info.content_node)
+            ]
+
+        def env_func_get_commands() -> List[UrlCommand]:
+            return self.get_url_commands_impl(url_info, structure_node)
+
         return {
+            # main usage
+            "explain": env_func_explain,
             # url info
             "url": url_info.url,
-            "link_el": url_info.link_el,
             "url_match": url_info.url_match,
             "res": url_info.res,
             "content_node": url_info.content_node,
             # structure node
-            "file_content": lambda: structure_node.extract_file_content(url_info),
-            "file_content_as_str": lambda: structure_node.extract_file_content(
-                url_info
-            ).decode("utf-8"),
-            "assert_content": lambda: structure_node.assert_content(url_info),
-            # other utility
-            "explain": lambda: print(
-                "Happens in the next phase: \n"
-                + "\n".join(
-                    [
-                        "    " + cmd.get_description()
-                        for cmd in self.get_url_commands_impl(url_info, structure_node)
-                    ]
-                )
-            ),
-            "get_all_urls": lambda: get_links(url_info.res, url_info.content_node),
+            "file_content": env_func_file_content,
+            "file_content_as_str": env_func_file_content_as_str,
+            "assert_content": env_func_assert_content,
             # for debug
             "url_info": url_info,
             "structure_node": structure_node,
-            "get_commands": lambda: self.get_url_commands_impl(
-                url_info, structure_node
-            ),
+            "get_content_urls": env_func_get_content_urls,
+            "get_commands": env_func_get_commands,
         }
 
     def get_url_commands(
@@ -206,10 +264,7 @@ class SiteConfig:
         self, url_info: "ResponseUrlInfo", structure_node: "StructureNode"
     ) -> List["UrlCommand"]:
         if structure_node.is_leaf():
-            if structure_node.needs_response_for_file_content():
-                file_content = structure_node.extract_file_content(url_info)
-            else:
-                file_content = url_info.res.body
+            file_content = structure_node.extract_file_content(url_info)
 
             return [
                 SaveFileContentCommand(
@@ -341,6 +396,7 @@ class LoginConfig:
 @typechecked
 class UrlInfo:
     url: str
+    original_url: str
     link_el: Selector
     url_match: Optional[re.Match]
 
@@ -350,12 +406,18 @@ class UrlInfo:
     def __init__(
         self,
         url: str,
+        original_url: Optional[str] = None,
         link_el: Optional[Selector] = None,
         url_match: Optional[re.Match] = None,
         file_path: Optional[str] = None,
         structure_path: Optional[List[int]] = None,
     ) -> None:
         self.url = url
+
+        if original_url is None:
+            self.original_url = url
+        else:
+            self.original_url = original_url
 
         if link_el is None:
             self.link_el = Selector(
@@ -402,6 +464,7 @@ class ResponseUrlInfo(UrlInfo):
         self, original_url_info: UrlInfo, res: Response, content_node: SelectorList
     ):
         self.url = original_url_info.url
+        self.original_url = original_url_info.original_url
         self.link_el = original_url_info.link_el
         self.url_match = original_url_info.url_match
         self.file_path = original_url_info.file_path
@@ -431,6 +494,7 @@ class ResponseUrlInfo(UrlInfo):
     def forward(self, structure_index: int) -> "UrlInfo":
         return UrlInfo(
             url=self.url,
+            original_url=self.original_url,
             link_el=self.link_el,
             url_match=self.url_match,
             file_path=self.file_path,
@@ -697,8 +761,13 @@ class StructureNode:
             return None
 
     def extract_file_content(self, url_info: ResponseUrlInfo) -> bytes:
-        assert self.file_content_extractor is not None
-        return self.extract_file_content_impl(url_info)
+        if self.file_content_extractor is not None:
+            file_content = self.extract_file_content_impl(url_info)
+        else:
+            file_content = get_html_content_bytes_for_selector_list(
+                url_info.content_node
+            )
+        return file_content
 
     def extract_file_content_without_response(self, url_info: UrlInfo) -> bytes:
         assert self.file_content_extractor is not None
@@ -1352,3 +1421,27 @@ def deindent(source_lines: List[str]) -> List[str]:
     deindented_source_lines = [l[min_indent:] for l in source_lines]
     assert all(re.search(r"\n$", l) for l in deindented_source_lines)
     return deindented_source_lines
+
+
+@typechecked
+def get_short_description_of_selector(selector: Selector) -> str:
+    if isinstance(selector.root, _Element):
+        html_text = cast(
+            str, etree.tostring(selector.root, encoding="unicode", pretty_print=True)
+        )
+        html_text_lines = html_text.split("\n")
+        assert 0 < len(html_text_lines)
+        if 1 == len(html_text_lines):
+            return html_text_lines[0]
+        else:
+            return html_text_lines[0] + " ..."
+    else:
+        return f"{selector.root}"
+
+
+@typechecked
+def get_html_content_bytes_for_selector_list(selector_list: SelectorList) -> bytes:
+    result = b""
+    for selector in selector_list:
+        result += cast(bytes, etree.tostring(selector.root))
+    return result
