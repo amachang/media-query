@@ -139,7 +139,7 @@ class SiteConfig:
 
     def get_start_command(self) -> "RequestUrlCommand":
         url_info = UrlInfo(self.start_url)
-        return RequestUrlCommand(url_info=url_info)
+        return RequestUrlCommand(url=url_info.url, url_info=url_info)
 
     def get_simulated_command_candidates_for_url(
         self, url: str
@@ -150,7 +150,7 @@ class SiteConfig:
             structure_node = self.root_structure_node.get_node_by_path(
                 url_info.structure_path
             )
-            command = RequestUrlCommand(url_info=url_info)
+            command = RequestUrlCommand(url=url_info.url, url_info=url_info)
             candidates.append((get_source_string(structure_node), command))
 
         return candidates
@@ -162,14 +162,35 @@ class SiteConfig:
             res, req_url_info
         )
         return {
-            **vars(url_info),
+            # url info
+            "url": url_info.url,
+            "link_el": url_info.link_el,
+            "url_match": url_info.url_match,
+            "res": url_info.res,
+            "content_node": url_info.content_node,
+            # structure node
+            "file_content": lambda: structure_node.extract_file_content(url_info),
+            "file_content_as_str": lambda: structure_node.extract_file_content(
+                url_info
+            ).decode("utf-8"),
+            "assert_content": lambda: structure_node.assert_content(url_info),
+            # other utility
+            "explain": lambda: print(
+                "Happens in the next phase: \n"
+                + "\n".join(
+                    [
+                        "    " + cmd.get_description()
+                        for cmd in self.get_url_commands_impl(url_info, structure_node)
+                    ]
+                )
+            ),
+            "get_all_urls": lambda: get_links(url_info.res, url_info.content_node),
+            # for debug
             "url_info": url_info,
             "structure_node": structure_node,
             "get_commands": lambda: self.get_url_commands_impl(
                 url_info, structure_node
             ),
-            "get_links": lambda: get_links(url_info.res, url_info.content_node),
-            "assert_content": lambda: structure_node.assert_content(url_info),
         }
 
     def get_url_commands(
@@ -192,7 +213,9 @@ class SiteConfig:
 
             return [
                 SaveFileContentCommand(
-                    file_path=url_info.file_path, file_content=file_content
+                    url=url_info.url,
+                    file_path=url_info.file_path,
+                    file_content=file_content,
                 )
             ]
 
@@ -214,7 +237,9 @@ class SiteConfig:
 
                     structure_node.update_url_info_before_request(next_url_info)
 
-                    commands.append(RequestUrlCommand(url_info=next_url_info))
+                    commands.append(
+                        RequestUrlCommand(url=url_info.url, url_info=next_url_info)
+                    )
 
         forwardable_structure_node_found = False
 
@@ -264,6 +289,7 @@ class SiteConfig:
                                 )
                                 commands.append(
                                     SaveFileContentCommand(
+                                        url=url_info.url,
                                         file_path=next_url_info.file_path,
                                         file_content=file_content,
                                     )
@@ -276,7 +302,11 @@ class SiteConfig:
                                     )
                                 )
                         else:
-                            commands.append(RequestUrlCommand(url_info=next_url_info))
+                            commands.append(
+                                RequestUrlCommand(
+                                    url=next_url_info.url, url_info=next_url_info
+                                )
+                            )
 
         if not forwardable_structure_node_found and structure_node.is_root:
             url_matchers = [
@@ -411,14 +441,19 @@ class ResponseUrlInfo(UrlInfo):
 @typechecked
 @dataclass
 class UrlCommand:
-    pass
+    url: str
+
+    def get_description(self) -> str:
+        raise NotImplementedError()
 
 
 @typechecked
 @dataclass
 class DownloadUrlCommand(UrlCommand):
-    url: str
     file_path: str
+
+    def get_description(self) -> str:
+        return f"Download {self.url}"
 
 
 @typechecked
@@ -427,11 +462,17 @@ class SaveFileContentCommand(UrlCommand):
     file_path: str
     file_content: bytes
 
+    def get_description(self) -> str:
+        return f"Save extracted content of {self.url}"
+
 
 @typechecked
 @dataclass
 class RequestUrlCommand(UrlCommand):
     url_info: UrlInfo
+
+    def get_description(self) -> str:
+        return f"Crawl child page {self.url}"
 
 
 U = TypeVar("U")
