@@ -134,11 +134,11 @@ class DebugSpider(SpiderBase):
 
     def get_start_request_before_login(self) -> Request:
         request = super().get_start_request_before_login()
-        self.logger.info(f"Requesting top page...: {request.url}")
+        self.logger.info(f"Requesting top page ... : {request.url}")
         return request
 
     def login(self, res: Response) -> Iterator[Request]:
-        self.logger.info(f"Logging in...: {self.config.login.url}")
+        self.logger.info(f"Logging in ... : {self.config.login.url}")
         return super().login(res)
 
     def get_first_request(self) -> Request:
