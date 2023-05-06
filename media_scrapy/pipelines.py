@@ -65,24 +65,25 @@ class SaveDownloadedFilePipeline:
     def process_item(self, item: Item, spider: Spider) -> Item:
         if isinstance(item, ScrapyFilesPipelineItem):
             download_dir = spider.settings.get("FILES_STORE")
+            original_item = item["original_item"]
             file_info_list = item["files"]
-            assert len(file_info_list) == 1
-            file_info = file_info_list[0]
-            if file_info["status"] == "downloaded":
-                original_item = item["original_item"]
-                assert isinstance(original_item, DownloadUrlItem)
-                save_file_path = original_item["file_path"]
+            if 0 < len(file_info_list):
+                assert len(file_info_list) == 1
+                file_info = file_info_list[0]
+                if file_info["status"] == "downloaded":
+                    assert isinstance(original_item, DownloadUrlItem)
+                    save_file_path = original_item["file_path"]
 
-                downloaded_file_path = path.join(download_dir, file_info["path"])
-                assert path.exists(downloaded_file_path)
-                save_dir = path.dirname(save_file_path)
-                os.makedirs(save_dir, exist_ok=True)
-                assert path.isdir(save_dir)
-                shutil.move(downloaded_file_path, save_file_path)
+                    downloaded_file_path = path.join(download_dir, file_info["path"])
+                    assert path.exists(downloaded_file_path)
+                    save_dir = path.dirname(save_file_path)
+                    os.makedirs(save_dir, exist_ok=True)
+                    assert path.isdir(save_dir)
+                    shutil.move(downloaded_file_path, save_file_path)
 
-                logger.debug(
-                    f"Downloaded file moved: {downloaded_file_path} -> {save_file_path}"
-                )
+                    logger.debug(
+                        f"Downloaded file moved: {downloaded_file_path} -> {save_file_path}"
+                    )
             return original_item
         else:
             return item
